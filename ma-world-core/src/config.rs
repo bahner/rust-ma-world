@@ -1,6 +1,10 @@
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -56,6 +60,16 @@ struct WorldConfigFile {
 }
 
 pub fn ma_config_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        if let Ok(xdg_dirs) = xdg::BaseDirectories::with_prefix("ma") {
+            let config_home = xdg_dirs.get_config_home();
+            if !config_home.as_os_str().is_empty() {
+                return config_home;
+            }
+        }
+    }
+
     let base = env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .ok()
@@ -63,6 +77,63 @@ pub fn ma_config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".config"));
 
     base.join("ma")
+}
+
+pub fn write_secret_file_secure(path: &Path, content: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("create secret file {}", path.display()))?;
+
+    use std::io::Write;
+    file.write_all(content)
+        .with_context(|| format!("write secret file {}", path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("finalize secret file {}", path.display()))?;
+
+    #[cfg(windows)]
+    {
+        apply_windows_private_dacl(path)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn apply_windows_private_dacl(path: &Path) -> Result<()> {
+    use std::process::Command;
+
+    let path_arg = path.display().to_string();
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "Users".to_string());
+    let user_grant = format!("{}:F", username);
+
+    let strip_inheritance = Command::new("icacls")
+        .args([&path_arg, "/inheritance:r"])
+        .status()
+        .with_context(|| format!("run icacls inheritance strip for {}", path.display()))?;
+    if !strip_inheritance.success() {
+        return Err(anyhow!(
+            "icacls failed to remove inherited ACL entries for {}",
+            path.display()
+        ));
+    }
+
+    let grant_acl = Command::new("icacls")
+        .args([&path_arg, "/grant:r", &user_grant, "SYSTEM:F", "Administrators:F"])
+        .status()
+        .with_context(|| format!("run icacls grant for {}", path.display()))?;
+    if !grant_acl.success() {
+        return Err(anyhow!(
+            "icacls failed to set private ACL for {}",
+            path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn expand_tilde(path: &Path) -> PathBuf {

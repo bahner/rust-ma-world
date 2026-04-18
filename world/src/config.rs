@@ -1,10 +1,6 @@
 use std::env;
 use std::fs;
-use std::fs::OpenOptions;
 use std::path::PathBuf;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -16,7 +12,7 @@ use libp2p_identity::Keypair;
 use ma_core::{identity::generate_secret_key_file, Document};
 use ma_did::generate_identity;
 use ma_world_core::bundle::{encrypt_identity_bundle_json, parse_plain_identity_bundle_json, PlainIdentityBundle};
-use ma_world_core::config::ma_config_dir;
+use ma_world_core::config::{ma_config_dir, write_secret_file_secure};
 use rand::RngCore;
 use serde::Serialize;
 
@@ -211,25 +207,8 @@ fn load_or_create_identity_bundle(bundle_path: &PathBuf, passphrase_path: &PathB
     let passphrase = hex::encode(passphrase_bytes);
     let encrypted = encrypt_identity_bundle_json(&passphrase, &plain)?;
 
-    write_secret_file(bundle_path, encrypted.as_bytes())?;
-    write_secret_file(passphrase_path, passphrase.as_bytes())?;
+    write_secret_file_secure(bundle_path, encrypted.as_bytes())?;
+    write_secret_file_secure(passphrase_path, passphrase.as_bytes())?;
 
     Ok(plain)
-}
-
-fn write_secret_file(path: &PathBuf, content: &[u8]) -> Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true).truncate(false);
-    #[cfg(unix)]
-    options.mode(0o600);
-
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("create secret file {}", path.display()))?;
-    use std::io::Write;
-    file.write_all(content)
-        .with_context(|| format!("write secret file {}", path.display()))?;
-    file.write_all(b"\n")
-        .with_context(|| format!("finalize secret file {}", path.display()))?;
-    Ok(())
 }
