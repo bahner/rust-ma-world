@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use anyhow::{anyhow, Result};
 use ma_core::{Did, Document};
+use ma_core::ipfs_publish::publish_did_document_to_kubo;
 use serde::Serialize;
 
 use ma_core::kubo::{
@@ -11,6 +14,48 @@ use ma_core::kubo::{
     IpnsPublishOptions,
     KuboKey,
 };
+
+/// Publish a signed DID document to Kubo/IPNS.
+///
+/// Peeks at the Kubo keystore first: if the IPNS key matching `expected_ipns_id`
+/// is already imported, publishes directly using the existing alias.
+/// Otherwise imports the key (via `publish_did_document_to_kubo`) then publishes.
+pub async fn publish_identity_document(
+    kubo_rpc_api: &str,
+    expected_ipns_id: &str,
+    did_document_json: &str,
+    ipns_private_key_base64: &str,
+) -> Result<Option<String>> {
+    wait_for_api(kubo_rpc_api, 10).await?;
+
+    let keys = list_keys(kubo_rpc_api).await?;
+    if let Some(existing) = keys.into_iter().find(|k| k.id == expected_ipns_id) {
+        // Key already in Kubo — publish without re-importing
+        let document = Document::unmarshal(did_document_json)
+            .map_err(|err| anyhow!("invalid DID document JSON: {err}"))?;
+        document.validate()
+            .map_err(|err| anyhow!("invalid DID document: {err}"))?;
+        document.verify()
+            .map_err(|err| anyhow!("DID document signature verification failed: {err}"))?;
+
+        let cid = dag_put(kubo_rpc_api, &document).await?;
+        let publish_options = IpnsPublishOptions::default();
+        name_publish_with_retry(
+            kubo_rpc_api,
+            &existing.name,
+            &cid,
+            &publish_options,
+            3,
+            Duration::from_millis(1000),
+        )
+        .await?;
+
+        return Ok(Some(existing.name));
+    }
+
+    // Key not yet in Kubo — import and publish
+    publish_did_document_to_kubo(kubo_rpc_api, did_document_json, ipns_private_key_base64).await
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IdentityPublishResult {

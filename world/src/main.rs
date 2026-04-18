@@ -12,7 +12,6 @@ use ma_core::{
     Document,
     EncryptionKey,
     identity::load_secret_key_bytes,
-    ipfs_publish::publish_did_document_to_kubo,
     Did,
     IrohEndpoint,
     MaEndpoint,
@@ -25,6 +24,7 @@ use ma_world_core::{
     config::{expand_tilde, load_startup_identity_material, load_world_config, WorldConfig},
     ensure_kubo_key_alias,
     handle_ipfs_publish_message,
+    publish_identity_document,
     publish_identity_with_kubo_alias,
     IpfsRequestReply,
     IPFS_REPLY_CONTENT_TYPE,
@@ -99,8 +99,9 @@ async fn main() -> Result<()> {
             )
                 .with_context(|| format!("generate startup did document for '{}'", owner_did.ipns))?;
 
-            let published = publish_did_document_to_kubo(
+            let published = publish_identity_document(
                 &config.kubo_rpc_api,
+                &owner_did.ipns,
                 &did_document_json,
                 &identity.ipns_private_key_base64,
             )

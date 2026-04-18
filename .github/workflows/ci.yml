@@ -44,6 +44,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
