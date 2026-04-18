@@ -20,14 +20,17 @@ pub struct WorldConfig {
     pub unlock_bundle_file: Option<String>,
     pub status_api_bind: String,
     pub publish_identity_on_startup: bool,
-    pub identity_document_json_file: Option<String>,
     pub identity_ipns_private_key_base64_file: Option<String>,
+    pub identity_signing_private_key_hex_file: Option<String>,
+    pub identity_encryption_private_key_hex_file: Option<String>,
+    pub identity_document_json_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StartupIdentityMaterial {
-    pub did_document_json: String,
     pub ipns_private_key_base64: String,
+    pub signing_private_key_hex: String,
+    pub encryption_private_key_hex: String,
     pub source: String,
 }
 
@@ -44,8 +47,10 @@ struct WorldConfigFile {
     unlock_bundle_file: Option<String>,
     status_api_bind: Option<String>,
     publish_identity_on_startup: Option<bool>,
-    identity_document_json_file: Option<String>,
     identity_ipns_private_key_base64_file: Option<String>,
+    identity_signing_private_key_hex_file: Option<String>,
+    identity_encryption_private_key_hex_file: Option<String>,
+    identity_document_json_file: Option<String>,
 }
 
 pub fn ma_config_dir() -> PathBuf {
@@ -126,8 +131,10 @@ pub fn load_world_config(slug: &str) -> Result<(WorldConfig, PathBuf)> {
             .status_api_bind
             .unwrap_or_else(|| "127.0.0.1:5002".to_string()),
         publish_identity_on_startup: file.publish_identity_on_startup.unwrap_or(true),
-        identity_document_json_file: file.identity_document_json_file,
         identity_ipns_private_key_base64_file: file.identity_ipns_private_key_base64_file,
+        identity_signing_private_key_hex_file: file.identity_signing_private_key_hex_file,
+        identity_encryption_private_key_hex_file: file.identity_encryption_private_key_hex_file,
+        identity_document_json_file: file.identity_document_json_file,
     };
 
     Ok((config, path))
@@ -138,20 +145,33 @@ pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<Sta
         return Ok(None);
     }
 
-    if let (Some(doc_file), Some(key_file)) = (
-        config.identity_document_json_file.as_deref(),
+    if let (Some(ipns_key_file), Some(signing_key_file), Some(encryption_key_file)) = (
         config.identity_ipns_private_key_base64_file.as_deref(),
+        config.identity_signing_private_key_hex_file.as_deref(),
+        config.identity_encryption_private_key_hex_file.as_deref(),
     ) {
-        let did_document_json = fs::read_to_string(expand_tilde(Path::new(doc_file)))
-            .with_context(|| format!("read identity_document_json_file {doc_file}"))?;
-        let ipns_private_key_base64 = fs::read_to_string(expand_tilde(Path::new(key_file)))
-            .with_context(|| format!("read identity_ipns_private_key_base64_file {key_file}"))?;
+        let ipns_private_key_base64 = fs::read_to_string(expand_tilde(Path::new(ipns_key_file)))
+            .with_context(|| format!("read identity_ipns_private_key_base64_file {ipns_key_file}"))?;
+        let signing_private_key_hex = fs::read_to_string(expand_tilde(Path::new(signing_key_file)))
+            .with_context(|| format!("read identity_signing_private_key_hex_file {signing_key_file}"))?;
+        let encryption_private_key_hex = fs::read_to_string(expand_tilde(Path::new(encryption_key_file)))
+            .with_context(|| format!("read identity_encryption_private_key_hex_file {encryption_key_file}"))?;
 
         return Ok(Some(StartupIdentityMaterial {
-            did_document_json,
             ipns_private_key_base64: ipns_private_key_base64.trim().to_string(),
-            source: format!("files: {doc_file}, {key_file}"),
+            signing_private_key_hex: signing_private_key_hex.trim().to_string(),
+            encryption_private_key_hex: encryption_private_key_hex.trim().to_string(),
+            source: format!("files: {ipns_key_file}, {signing_key_file}, {encryption_key_file}"),
         }));
+    }
+
+    if config.identity_document_json_file.is_some()
+        && (config.identity_signing_private_key_hex_file.is_none()
+            || config.identity_encryption_private_key_hex_file.is_none())
+    {
+        return Err(anyhow!(
+            "identity_document_json_file without signing/encryption key files is deprecated; provide identity_signing_private_key_hex_file and identity_encryption_private_key_hex_file or use unlock_bundle_file"
+        ));
     }
 
     if let Some(bundle_file) = config.unlock_bundle_file.as_deref() {
@@ -168,16 +188,18 @@ pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<Sta
             })?;
 
             return Ok(Some(StartupIdentityMaterial {
-                did_document_json: bundle.did_document_json,
                 ipns_private_key_base64: bundle.ipns_private_key_base64.trim().to_string(),
+                signing_private_key_hex: bundle.signing_private_key_hex.trim().to_string(),
+                encryption_private_key_hex: bundle.encryption_private_key_hex.trim().to_string(),
                 source: format!("encrypted unlock_bundle_file: {}", bundle_path.display()),
             }));
         }
 
         if let Ok(bundle) = parse_plain_identity_bundle_json(&raw) {
             return Ok(Some(StartupIdentityMaterial {
-                did_document_json: bundle.did_document_json,
                 ipns_private_key_base64: bundle.ipns_private_key_base64.trim().to_string(),
+                signing_private_key_hex: bundle.signing_private_key_hex.trim().to_string(),
+                encryption_private_key_hex: bundle.encryption_private_key_hex.trim().to_string(),
                 source: format!("plaintext unlock_bundle_file: {}", bundle_path.display()),
             }));
         }

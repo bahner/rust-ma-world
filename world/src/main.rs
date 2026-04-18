@@ -7,8 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use api::{mark_inbox, mark_ipfs, new_shared_status, run_status_api, set_endpoint_metadata};
 use config::{generate_headless_config, parse_args};
 use i18n::Localizer;
-use ma_did::{generate_identity, Ipld};
+use ma_did::Ipld;
 use ma_core::{
+    Document,
+    EncryptionKey,
     identity::load_secret_key_bytes,
     ipfs_publish::publish_did_document_to_kubo,
     Did,
@@ -16,6 +18,7 @@ use ma_core::{
     MaEndpoint,
     Message,
     SigningKey,
+    VerificationMethod,
     INBOX_PROTOCOL, IPFS_PROTOCOL,
 };
 use ma_world_core::{
@@ -87,7 +90,12 @@ async fn main() -> Result<()> {
 
     match load_startup_identity_material(&config)? {
         Some(identity) => {
-            let did_document_json = generate_world_did_document(&owner_did.ipns, &endpoint.services())
+            let did_document_json = generate_world_did_document_from_keys(
+                &owner_did.ipns,
+                &endpoint.services(),
+                &identity.signing_private_key_hex,
+                &identity.encryption_private_key_hex,
+            )
                 .with_context(|| format!("generate startup did document for '{}'", owner_did.ipns))?;
 
             let published = publish_did_document_to_kubo(
@@ -118,7 +126,7 @@ async fn main() -> Result<()> {
                     .await
                     .with_context(|| format!("ensure kubo key alias '{}'", alias))?;
 
-                let did_document_json = generate_world_did_document(&alias_key.id, &endpoint.services())
+                let did_document_json = generate_world_did_document_ephemeral(&alias_key.id, &endpoint.services())
                     .with_context(|| format!("marshal startup did document for alias '{}'", alias))?;
 
                 let published = publish_identity_with_kubo_alias(
@@ -318,35 +326,53 @@ fn log_trace_message(protocol: &str, message: &Message) {
     );
 }
 
-fn generate_world_did_document(ipns: &str, services: &[String]) -> Result<String> {
-    let generated_identity = generate_identity(ipns)
-        .map_err(|err| anyhow!("generate world did document for '{}': {err}", ipns))?;
+fn generate_world_did_document_from_keys(
+    ipns: &str,
+    services: &[String],
+    signing_private_key_hex: &str,
+    encryption_private_key_hex: &str,
+) -> Result<String> {
+    let root_did = Did::new_url(ipns, None::<String>)
+        .with_context(|| format!("build root did for '{}'", ipns))?;
+    let signing_did = Did::new_url(ipns, Some("signing".to_string()))
+        .with_context(|| format!("build signing did for '{}'", ipns))?;
+    let encryption_did = Did::new_url(ipns, Some("encryption".to_string()))
+        .with_context(|| format!("build encryption did for '{}'", ipns))?;
 
-    let mut document = generated_identity.document;
-    document.set_ma(build_ma_namespace(services));
-    document.touch();
-
-    let verification_method_id = document
-        .assertion_method
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("generated did document for '{}' has no assertion_method", ipns))?;
-    let verification_method = document
-        .get_verification_method_by_id(&verification_method_id)
-        .with_context(|| format!("find assertion verification method '{}'", verification_method_id))?
-        .clone();
-    let signing_did = Did::try_from(verification_method_id.as_str())
-        .with_context(|| format!("parse assertion verification method did url '{}'", verification_method_id))?;
-
-    let signing_key_bytes: [u8; 32] = hex::decode(&generated_identity.signing_private_key_hex)
+    let signing_key_bytes: [u8; 32] = hex::decode(signing_private_key_hex.trim())
         .with_context(|| format!("decode signing key hex for '{}'", ipns))?
         .try_into()
         .map_err(|_| anyhow!("invalid signing key length for '{}'", ipns))?;
+    let encryption_key_bytes: [u8; 32] = hex::decode(encryption_private_key_hex.trim())
+        .with_context(|| format!("decode encryption key hex for '{}'", ipns))?
+        .try_into()
+        .map_err(|_| anyhow!("invalid encryption key length for '{}'", ipns))?;
+
     let signing_key = SigningKey::from_private_key_bytes(signing_did, signing_key_bytes)
         .with_context(|| format!("reconstruct signing key for '{}'", ipns))?;
+    let encryption_key = EncryptionKey::from_private_key_bytes(encryption_did, encryption_key_bytes)
+        .with_context(|| format!("reconstruct encryption key for '{}'", ipns))?;
+
+    let signing_vm = VerificationMethod::try_from(&signing_key)
+        .with_context(|| format!("build signing verification method for '{}'", ipns))?;
+    let encryption_vm = VerificationMethod::try_from(&encryption_key)
+        .with_context(|| format!("build encryption verification method for '{}'", ipns))?;
+
+    let mut document = Document::new(&root_did, &root_did);
+    document
+        .add_verification_method(signing_vm.clone())
+        .with_context(|| format!("add signing verification method for '{}'", ipns))?;
+    document
+        .add_verification_method(encryption_vm.clone())
+        .with_context(|| format!("add encryption verification method for '{}'", ipns))?;
+    document.assertion_method = vec![signing_vm.id.clone()];
+    document.key_agreement = vec![encryption_vm.id.clone()];
+
+    document.set_ma(build_ma_namespace(services));
+    document.touch();
 
     document
-        .sign(&signing_key, &verification_method)
+        .sign(&signing_key, &signing_vm)
         .with_context(|| format!("sign did document for '{}'", ipns))?;
     document
         .validate()
@@ -358,6 +384,18 @@ fn generate_world_did_document(ipns: &str, services: &[String]) -> Result<String
     document
         .marshal()
         .with_context(|| format!("marshal did document for '{}'", ipns))
+}
+
+fn generate_world_did_document_ephemeral(ipns: &str, services: &[String]) -> Result<String> {
+    let generated_identity = ma_did::generate_identity(ipns)
+        .map_err(|err| anyhow!("generate world did document for '{}': {err}", ipns))?;
+
+    generate_world_did_document_from_keys(
+        ipns,
+        services,
+        &generated_identity.signing_private_key_hex,
+        &generated_identity.encryption_private_key_hex,
+    )
 }
 
 fn build_ma_namespace(services: &[String]) -> Ipld {

@@ -14,8 +14,11 @@ const KEY_LEN: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlainIdentityBundle {
-    pub did_document_json: String,
     pub ipns_private_key_base64: String,
+    pub signing_private_key_hex: String,
+    pub encryption_private_key_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_document_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,11 +34,14 @@ pub struct EncryptedIdentityBundle {
 pub fn parse_plain_identity_bundle_json(raw: &str) -> Result<PlainIdentityBundle> {
     let bundle: PlainIdentityBundle =
         serde_json::from_str(raw).map_err(|err| anyhow!("invalid plaintext identity bundle JSON: {err}"))?;
-    if bundle.did_document_json.trim().is_empty() {
-        return Err(anyhow!("did_document_json is empty in plaintext identity bundle"));
-    }
     if bundle.ipns_private_key_base64.trim().is_empty() {
         return Err(anyhow!("ipns_private_key_base64 is empty in plaintext identity bundle"));
+    }
+    if bundle.signing_private_key_hex.trim().is_empty() {
+        return Err(anyhow!("signing_private_key_hex is empty in plaintext identity bundle"));
+    }
+    if bundle.encryption_private_key_hex.trim().is_empty() {
+        return Err(anyhow!("encryption_private_key_hex is empty in plaintext identity bundle"));
     }
     Ok(bundle)
 }
@@ -123,11 +129,14 @@ pub fn decrypt_identity_bundle(
     let plain: PlainIdentityBundle = serde_json::from_slice(&plaintext)
         .map_err(|err| anyhow!("invalid decrypted identity bundle JSON: {err}"))?;
 
-    if plain.did_document_json.trim().is_empty() {
-        return Err(anyhow!("did_document_json is empty in decrypted identity bundle"));
-    }
     if plain.ipns_private_key_base64.trim().is_empty() {
         return Err(anyhow!("ipns_private_key_base64 is empty in decrypted identity bundle"));
+    }
+    if plain.signing_private_key_hex.trim().is_empty() {
+        return Err(anyhow!("signing_private_key_hex is empty in decrypted identity bundle"));
+    }
+    if plain.encryption_private_key_hex.trim().is_empty() {
+        return Err(anyhow!("encryption_private_key_hex is empty in decrypted identity bundle"));
     }
 
     Ok(plain)

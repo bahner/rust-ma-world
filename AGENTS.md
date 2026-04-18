@@ -7,3 +7,7 @@ samtidig med å bygge world skal vi definere specs for interaksjon i spec mappen
 Det pågår bygg av en klient/actor parallelt og den kan kun forholde seg til spec's for å kunne skrives.
 
 Så summa summarum så får vi opprettet en verden med en dokumentert spec for bruk.
+
+Prosjektet er i aktiv utvikling med én hovedbruker. Vi bryr oss ikke om bakoverkompatibilitet i denne fasen.
+Breaking endringer i API/spec er akseptabelt når det gir bedre modell eller enklere implementasjon.
+Når vi bryter noe, oppdaterer vi kode/spec direkte slik at alt bygger og fungerer igjen.
