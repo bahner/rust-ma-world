@@ -1,13 +1,23 @@
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 use anyhow::{anyhow, Context, Result};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+use cid::multibase::Base;
+use cid::Cid;
 use crate::i18n::{Localizer, DEFAULT_LOCALE};
+use libp2p_identity::Keypair;
 use ma_core::{identity::generate_secret_key_file, Document};
 use ma_did::generate_identity;
+use ma_world_core::bundle::{encrypt_identity_bundle_json, parse_plain_identity_bundle_json, PlainIdentityBundle};
 use ma_world_core::config::ma_config_dir;
-use ma_world_core::kubo::ensure_kubo_key_alias;
+use rand::RngCore;
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
@@ -31,6 +41,8 @@ struct HeadlessConfigFile {
     publish_identity_on_startup: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     unlock_passphrase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unlock_passphrase_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     unlock_bundle_file: Option<String>,
 }
@@ -103,16 +115,17 @@ pub async fn generate_headless_config(cli: &CliArgs) -> Result<PathBuf> {
         .unwrap_or_else(|| "http://127.0.0.1:5001".to_string());
     let kubo_key_alias = slug.to_string();
 
-    let kubo_key = ensure_kubo_key_alias(&kubo_rpc_api, &kubo_key_alias).await?;
-    let generated_identity = generate_identity(&kubo_key.id)
-        .map_err(|err| anyhow!("generate did document from ipns id '{}': {err}", kubo_key.id))?;
-    let did_document_json = generated_identity
-        .document
-        .marshal()
-        .map_err(|err| anyhow!("marshal generated did document: {err}"))?;
+    let bundle_path = config_dir.join(format!("{slug}_bundle.json"));
+    let passphrase_path = config_dir.join(format!("{slug}_bundle.passphrase"));
 
-    {
-    }
+    let identity_bundle = load_or_create_identity_bundle(&bundle_path, &passphrase_path)?;
+    let doc = Document::unmarshal(
+        identity_bundle
+            .did_document_json
+            .as_deref()
+            .ok_or_else(|| anyhow!("generated identity bundle is missing did_document_json"))?,
+    )
+    .map_err(|err| anyhow!("invalid did document json for headless config: {err}"))?;
 
     let iroh_secret_path = config_dir.join(format!("{slug}_iroh.bin"));
     if !iroh_secret_path.exists() {
@@ -120,8 +133,6 @@ pub async fn generate_headless_config(cli: &CliArgs) -> Result<PathBuf> {
             .map_err(|err| anyhow!("generate iroh secret {}: {err}", iroh_secret_path.display()))?;
     }
 
-    let doc = Document::unmarshal(&did_document_json)
-        .map_err(|err| anyhow!("invalid did document json for headless config: {err}"))?;
     let owner = format!("{}#world", doc.id);
 
     let config = HeadlessConfigFile {
@@ -135,7 +146,8 @@ pub async fn generate_headless_config(cli: &CliArgs) -> Result<PathBuf> {
         status_api_bind: "127.0.0.1:5002".to_string(),
         publish_identity_on_startup: true,
         unlock_passphrase: None,
-        unlock_bundle_file: None,
+        unlock_passphrase_file: Some(passphrase_path.display().to_string()),
+        unlock_bundle_file: Some(bundle_path.display().to_string()),
     };
 
     let config_path = config_dir.join(format!("{slug}.yaml"));
@@ -145,4 +157,79 @@ pub async fn generate_headless_config(cli: &CliArgs) -> Result<PathBuf> {
         .with_context(|| format!("write config file {}", config_path.display()))?;
 
     Ok(config_path)
+}
+
+fn load_or_create_identity_bundle(bundle_path: &PathBuf, passphrase_path: &PathBuf) -> Result<PlainIdentityBundle> {
+    match (bundle_path.exists(), passphrase_path.exists()) {
+        (true, true) => {
+            let raw = fs::read_to_string(bundle_path)
+                .with_context(|| format!("read identity bundle {}", bundle_path.display()))?;
+            if let Ok(bundle) = parse_plain_identity_bundle_json(&raw) {
+                return Ok(bundle);
+            }
+
+            let passphrase = fs::read_to_string(passphrase_path)
+                .with_context(|| format!("read bundle passphrase {}", passphrase_path.display()))?;
+            return ma_world_core::bundle::decrypt_identity_bundle_json(passphrase.trim(), &raw)
+                .with_context(|| format!("decrypt identity bundle {}", bundle_path.display()));
+        }
+        (false, false) => {}
+        _ => {
+            return Err(anyhow!(
+                "bundle/passphrase files are inconsistent: {} {}",
+                bundle_path.display(),
+                passphrase_path.display()
+            ));
+        }
+    }
+
+    let ipns_keypair = Keypair::generate_ed25519();
+    let ipns_private_key_bytes = ipns_keypair
+        .to_protobuf_encoding()
+        .map_err(|err| anyhow!("encode ipns private key: {err}"))?;
+    let peer_id = ipns_keypair.public().to_peer_id();
+    let ipns_id = Cid::new_v1(0x72, peer_id.as_ref().to_owned())
+        .to_string_of_base(Base::Base36Lower)
+        .map_err(|err| anyhow!("encode ipns id as base36 cidv1: {err}"))?;
+
+    let generated_identity = generate_identity(&ipns_id)
+        .map_err(|err| anyhow!("generate did document from ipns id '{}': {err}", ipns_id))?;
+    let did_document_json = generated_identity
+        .document
+        .marshal()
+        .map_err(|err| anyhow!("marshal generated did document: {err}"))?;
+
+    let plain = PlainIdentityBundle {
+        ipns_private_key_base64: B64.encode(ipns_private_key_bytes),
+        signing_private_key_hex: generated_identity.signing_private_key_hex,
+        encryption_private_key_hex: generated_identity.encryption_private_key_hex,
+        did_document_json: Some(did_document_json),
+    };
+
+    let mut passphrase_bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut passphrase_bytes);
+    let passphrase = hex::encode(passphrase_bytes);
+    let encrypted = encrypt_identity_bundle_json(&passphrase, &plain)?;
+
+    write_secret_file(bundle_path, encrypted.as_bytes())?;
+    write_secret_file(passphrase_path, passphrase.as_bytes())?;
+
+    Ok(plain)
+}
+
+fn write_secret_file(path: &PathBuf, content: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("create secret file {}", path.display()))?;
+    use std::io::Write;
+    file.write_all(content)
+        .with_context(|| format!("write secret file {}", path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("finalize secret file {}", path.display()))?;
+    Ok(())
 }

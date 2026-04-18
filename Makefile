@@ -3,6 +3,8 @@
 TARGET ?= x86_64-unknown-linux-musl
 PACKAGE ?= ma-world
 PROFILE ?= release
+SLUG ?= world
+KUBO_RPC_API ?= http://127.0.0.1:5001
 BIN_PATH := target/$(TARGET)/$(PROFILE)/$(PACKAGE)
 RUSTUP_STAMP := target/.rustup-target-$(TARGET).stamp
 
@@ -10,7 +12,7 @@ WORLD_SOURCES := $(wildcard world/src/*.rs)
 CORE_SOURCES := $(wildcard ma-world-core/src/*.rs)
 MANIFESTS := Cargo.toml Cargo.lock world/Cargo.toml ma-world-core/Cargo.toml
 
-.PHONY: all check clean distclean deploy
+.PHONY: all check clean distclean deploy gen-headless
 
 all: $(BIN_PATH)
 
@@ -29,6 +31,9 @@ check: $(WORLD_SOURCES) $(CORE_SOURCES) $(MANIFESTS) | $(RUSTUP_STAMP)
 
 deploy: $(BIN_PATH)
 	scp ./$(BIN_PATH) ma-world:bin/
+
+gen-headless:
+	cargo run -p $(PACKAGE) -- --slug $(SLUG) --kubo-rpc-api $(KUBO_RPC_API) --gen-headless-config
 
 clean:
 	cargo clean -p $(PACKAGE)

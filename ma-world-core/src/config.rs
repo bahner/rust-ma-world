@@ -17,6 +17,7 @@ pub struct WorldConfig {
     pub log_level: Option<String>,
     pub log_file: Option<String>,
     pub unlock_passphrase: Option<String>,
+    pub unlock_passphrase_file: Option<String>,
     pub unlock_bundle_file: Option<String>,
     pub status_api_bind: String,
     pub publish_identity_on_startup: bool,
@@ -44,6 +45,7 @@ struct WorldConfigFile {
     log_level: Option<String>,
     log_file: Option<String>,
     unlock_passphrase: Option<String>,
+    unlock_passphrase_file: Option<String>,
     unlock_bundle_file: Option<String>,
     status_api_bind: Option<String>,
     publish_identity_on_startup: Option<bool>,
@@ -126,6 +128,7 @@ pub fn load_world_config(slug: &str) -> Result<(WorldConfig, PathBuf)> {
         log_level: file.log_level,
         log_file: file.log_file,
         unlock_passphrase: file.unlock_passphrase,
+        unlock_passphrase_file: file.unlock_passphrase_file,
         unlock_bundle_file,
         status_api_bind: file
             .status_api_bind
@@ -179,10 +182,31 @@ pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<Sta
         let raw = fs::read_to_string(&bundle_path)
             .with_context(|| format!("read unlock_bundle_file {}", bundle_path.display()))?;
 
-        if let Some(passphrase) = config.unlock_passphrase.as_deref() {
+        let file_passphrase = config
+            .unlock_passphrase_file
+            .as_deref()
+            .map(|path| {
+                fs::read_to_string(expand_tilde(Path::new(path)))
+                    .with_context(|| format!("read unlock_passphrase_file {path}"))
+                    .map(|value| value.trim().to_string())
+            })
+            .transpose()?;
+        let env_passphrase = env::var("MA_WORLD_UNLOCK_PASSPHRASE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        let passphrase = config
+            .unlock_passphrase
+            .as_deref()
+            .map(str::to_string)
+            .or(file_passphrase)
+            .or(env_passphrase);
+
+        if let Some(passphrase) = passphrase.as_deref() {
             let bundle = decrypt_identity_bundle_json(passphrase, &raw).with_context(|| {
                 format!(
-                    "decrypt unlock_bundle_file {} with unlock_passphrase",
+                    "decrypt unlock_bundle_file {} with configured passphrase",
                     bundle_path.display()
                 )
             })?;
@@ -205,7 +229,7 @@ pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<Sta
         }
 
         return Err(anyhow!(
-            "unlock_bundle_file {} is not a supported plaintext bundle and no unlock_passphrase was provided for encrypted bundles",
+            "unlock_bundle_file {} is not a supported plaintext bundle and no unlock_passphrase, unlock_passphrase_file, or MA_WORLD_UNLOCK_PASSPHRASE was provided for encrypted bundles",
             bundle_path.display()
         ));
     }
