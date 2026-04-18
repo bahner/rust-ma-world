@@ -2,42 +2,38 @@ use anyhow::{anyhow, Context, Result};
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use unic_langid::LanguageIdentifier;
 
-const NB_NO_FTL: &str = r#"
-world-online = world online: did={$did} endpoint={$endpoint} services={$services}
-publish-ok-source = publisert did={$did} kilde={$source}
-publish-ok-alias = publisert did={$did} cid={$cid} alias={$alias}
-inbox-received = mottok inbox: {$from} -> {$to} type={$content_type} id={$id}
-ipfs-received = mottok ipfs: {$from} -> {$to} type={$content_type} id={$id}
-ipfs-reply = ipfs svar: til={$to} status={$status} code={$code} id={$id} type={$content_type}
-"#;
+const NB_NO_FTL: &str = include_str!("../locales/nb_NO.ftl");
+const EN_UK_FTL: &str = include_str!("../locales/en_UK.ftl");
+
+pub const DEFAULT_LOCALE: &str = "nb_NO";
 
 pub struct Localizer {
     bundle: FluentBundle<FluentResource>,
-    language: String,
+    locale: String,
 }
 
 impl Localizer {
-    pub fn new(config_language: Option<&str>) -> Result<Self> {
-        let selected_language = normalize_language(config_language);
-        let lang_id: LanguageIdentifier = selected_language
+    pub fn new(config_locale: Option<&str>) -> Result<Self> {
+        let selected_locale = normalize_locale(config_locale);
+        let lang_id: LanguageIdentifier = selected_locale.langid
             .parse()
-            .with_context(|| format!("invalid language tag: {selected_language}"))?;
+            .with_context(|| format!("invalid locale tag: {}", selected_locale.langid))?;
 
         let mut bundle = FluentBundle::new(vec![lang_id]);
-        let resource = FluentResource::try_new(NB_NO_FTL.to_string())
-            .map_err(|error| anyhow!("failed to parse nb_NO fluent resource: {error:?}"))?;
+        let resource = FluentResource::try_new(selected_locale.ftl.to_string())
+            .map_err(|error| anyhow!("failed to parse {} fluent resource: {error:?}", selected_locale.key))?;
         bundle
             .add_resource(resource)
-            .map_err(|_| anyhow!("failed to add nb_NO fluent resource"))?;
+            .map_err(|_| anyhow!("failed to add {} fluent resource", selected_locale.key))?;
 
         Ok(Self {
             bundle,
-            language: selected_language.to_string(),
+            locale: selected_locale.key.to_string(),
         })
     }
 
-    pub fn language(&self) -> &str {
-        &self.language
+    pub fn locale(&self) -> &str {
+        &self.locale
     }
 
     pub fn world_online(&self, did: &str, endpoint: &str, services: &str) -> String {
@@ -99,6 +95,22 @@ impl Localizer {
         )
     }
 
+    pub fn cli_usage(&self) -> String {
+        self.format("cli-usage", [])
+    }
+
+    pub fn cli_missing_value(&self, flag: &str) -> String {
+        self.format("cli-missing-value", [("flag", flag)])
+    }
+
+    pub fn cli_unknown_argument(&self, arg: &str) -> String {
+        self.format("cli-unknown-argument", [("arg", arg)])
+    }
+
+    pub fn generated_headless_config(&self, path: &str) -> String {
+        self.format("generated-headless-config", [("path", path)])
+    }
+
     fn format<const N: usize>(&self, message_id: &str, pairs: [(&str, &str); N]) -> String {
         let mut args = FluentArgs::new();
         for (key, value) in pairs {
@@ -126,15 +138,37 @@ impl Localizer {
     }
 }
 
-fn normalize_language(config_language: Option<&str>) -> &'static str {
-    let Some(language) = config_language else {
-        return "nb-NO";
+struct LanguageChoice {
+    key: &'static str,
+    langid: &'static str,
+    ftl: &'static str,
+}
+
+fn normalize_locale(config_locale: Option<&str>) -> LanguageChoice {
+    let Some(locale) = config_locale else {
+        return LanguageChoice {
+            key: DEFAULT_LOCALE,
+            langid: "nb-NO",
+            ftl: NB_NO_FTL,
+        };
     };
 
-    let normalized = language.trim().replace('_', "-").to_ascii_lowercase();
-    if normalized == "nb" || normalized == "nb-no" {
-        "nb-NO"
-    } else {
-        "nb-NO"
+    let normalized = locale.trim().replace('-', "_").to_ascii_lowercase();
+    match normalized.as_str() {
+        "en" | "en_uk" | "en_gb" => LanguageChoice {
+            key: "en_UK",
+            langid: "en-GB",
+            ftl: EN_UK_FTL,
+        },
+        "nb" | "nb_no" => LanguageChoice {
+            key: "nb_NO",
+            langid: "nb-NO",
+            ftl: NB_NO_FTL,
+        },
+        _ => LanguageChoice {
+            key: DEFAULT_LOCALE,
+            langid: "nb-NO",
+            ftl: NB_NO_FTL,
+        },
     }
 }

@@ -42,10 +42,11 @@ mod i18n;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = parse_args()?;
+    let boot_i18n = Localizer::new(None)?;
 
     if cli.gen_headless_config {
         let config_path = generate_headless_config(&cli).await?;
-        println!("generated headless world config at {}", config_path.display());
+        println!("{}", boot_i18n.generated_headless_config(&config_path.display().to_string()));
         return Ok(());
     }
 
@@ -57,11 +58,11 @@ async fn main() -> Result<()> {
     }
 
     let _log_guard = init_logging(&slug, &config)?;
-    let i18n = Localizer::new(config.lang.as_deref())?;
+    let i18n = Localizer::new(config.locale.as_deref())?;
     info!(slug = %slug, config = %config_path.display(), "world startup");
     info!(owner = %config.owner, "configured owner");
     info!(bind = %config.status_api_bind, "status api configured");
-    info!(language = %i18n.language(), "console language configured");
+    info!(locale = %i18n.locale(), "console locale configured");
 
     if config.unlock_bundle_file.is_some() || config.unlock_passphrase.is_some() {
         info!("unlock bundle/passphrase found in config (not used yet in this first slice)");

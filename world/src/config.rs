@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
+use crate::i18n::{Localizer, DEFAULT_LOCALE};
 use ma_core::{identity::generate_secret_key_file, Document};
 use ma_did::generate_identity;
 use ma_world_core::config::ma_config_dir;
@@ -22,7 +23,7 @@ struct HeadlessConfigFile {
     kubo_rpc_api: String,
     kubo_key_alias: String,
     owner: String,
-    lang: String,
+    locale: String,
     iroh_secret: String,
     log_level: String,
     log_file: String,
@@ -35,6 +36,7 @@ struct HeadlessConfigFile {
 }
 
 pub fn parse_args() -> Result<CliArgs> {
+    let i18n = Localizer::new(None)?;
     let mut slug = "world".to_string();
     let mut status_api_bind = None;
     let mut gen_headless_config = false;
@@ -46,13 +48,13 @@ pub fn parse_args() -> Result<CliArgs> {
             "--slug" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| anyhow!("missing value for --slug"))?;
+                    .ok_or_else(|| anyhow!(i18n.cli_missing_value("--slug")))?;
                 slug = value;
             }
             "--status-api-bind" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| anyhow!("missing value for --status-api-bind"))?;
+                    .ok_or_else(|| anyhow!(i18n.cli_missing_value("--status-api-bind")))?;
                 status_api_bind = Some(value);
             }
             "--gen-headles-config" | "--gen-headless-config" => {
@@ -61,21 +63,18 @@ pub fn parse_args() -> Result<CliArgs> {
             "--kubo-rpc-api" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| anyhow!("missing value for --kubo-rpc-api"))?;
+                    .ok_or_else(|| anyhow!(i18n.cli_missing_value("--kubo-rpc-api")))?;
                 kubo_rpc_api = Some(value);
             }
             "-h" | "--help" => {
-                println!(
-                    "Usage: ma-world [--slug <slug>] [--status-api-bind <host:port>] [--gen-headless-config] [--kubo-rpc-api <url>]\n\
-                     Defaults: --slug world, --status-api-bind 127.0.0.1:5002, --kubo-rpc-api http://127.0.0.1:5001"
-                );
+                println!("{}", i18n.cli_usage());
                 std::process::exit(0);
             }
             value if !value.starts_with('-') => {
                 slug = value.to_string();
             }
             _ => {
-                return Err(anyhow!("unknown argument: {arg}"));
+                return Err(anyhow!(i18n.cli_unknown_argument(&arg)));
             }
         }
     }
@@ -129,7 +128,7 @@ pub async fn generate_headless_config(cli: &CliArgs) -> Result<PathBuf> {
         kubo_rpc_api,
         kubo_key_alias,
         owner,
-        lang: "nb_NO".to_string(),
+        locale: DEFAULT_LOCALE.to_string(),
         iroh_secret: iroh_secret_path.display().to_string(),
         log_level: "info".to_string(),
         log_file: format!("~/.local/share/ma/worlds/{slug}/{slug}.log"),
