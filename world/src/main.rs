@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Context, Result};
 use api::{mark_inbox, mark_ipfs, new_shared_status, run_status_api, set_endpoint_metadata};
 use config::{generate_headless_config, parse_args};
+use i18n::Localizer;
 use ma_did::{generate_identity, Ipld};
 use ma_core::{
     identity::load_secret_key_bytes,
@@ -26,11 +27,14 @@ use ma_world_core::{
     IPFS_REPLY_CONTENT_TYPE,
 };
 use tracing::{error, info, trace, warn};
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
 
 mod api;
 mod config;
+mod i18n;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -50,9 +54,11 @@ async fn main() -> Result<()> {
     }
 
     let _log_guard = init_logging(&slug, &config)?;
+    let i18n = Localizer::new(config.lang.as_deref())?;
     info!(slug = %slug, config = %config_path.display(), "world startup");
     info!(owner = %config.owner, "configured owner");
     info!(bind = %config.status_api_bind, "status api configured");
+    info!(language = %i18n.language(), "console language configured");
 
     if config.unlock_bundle_file.is_some() || config.unlock_passphrase.is_some() {
         info!("unlock bundle/passphrase found in config (not used yet in this first slice)");
@@ -73,6 +79,11 @@ async fn main() -> Result<()> {
 
     info!(endpoint_id = %endpoint.id(), "endpoint started");
     info!(services = ?endpoint.services(), "registered services");
+    info!(
+        target: "ma_event",
+        "{}",
+        i18n.world_online(&config.owner, &endpoint.id().to_string(), &endpoint.services().join(","))
+    );
 
     match load_startup_identity_material(&config)? {
         Some(identity) => {
@@ -91,6 +102,14 @@ async fn main() -> Result<()> {
                 did = %published.as_deref().unwrap_or("unknown"),
                 source = %identity.source,
                 "world identity published to kubo/ipns on startup"
+            );
+            info!(
+                target: "ma_event",
+                "{}",
+                i18n.publish_ok_source(
+                    published.as_deref().unwrap_or("unknown"),
+                    &identity.source,
+                )
             );
         }
         None => {
@@ -115,6 +134,11 @@ async fn main() -> Result<()> {
                     cid = %published.cid,
                     kubo_key_alias = %alias,
                     "world identity published to kubo/ipns on startup"
+                );
+                info!(
+                    target: "ma_event",
+                    "{}",
+                    i18n.publish_ok_alias(&published.did, &published.cid, alias)
                 );
             } else {
                 warn!(
@@ -146,14 +170,14 @@ async fn main() -> Result<()> {
             _ = ticker.tick() => {
                 for message in drain_messages(&mut inbox_messages) {
                     mark_inbox(&status, now_unix_secs()).await;
-                    log_inbox_message(&message);
+                    log_inbox_message(&message, &i18n);
                     log_trace_message(INBOX_PROTOCOL_STR, &message);
                 }
 
                 for message in drain_messages(&mut ipfs_messages) {
                     mark_ipfs(&status, now_unix_secs()).await;
                     log_trace_message(IPFS_PROTOCOL_STR, &message);
-                    handle_ipfs_message(&config, &message).await;
+                    handle_ipfs_message(&config, &message, &i18n).await;
                 }
             }
             status_result = &mut status_api_task => {
@@ -189,7 +213,7 @@ const IPFS_PROTOCOL_STR: &str = "/ma/ipfs/0.0.1";
 
 fn init_logging(slug: &str, config: &WorldConfig) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     let level = config.log_level.as_deref().unwrap_or("info");
-    let filter = tracing_subscriber::EnvFilter::try_new(level)
+    let file_filter = tracing_subscriber::EnvFilter::try_new(level)
         .with_context(|| format!("invalid log level/filter: {level}"))?;
 
     let log_path = config
@@ -221,8 +245,15 @@ fn init_logging(slug: &str, config: &WorldConfig) -> Result<tracing_appender::no
     let (file_writer, guard) = tracing_appender::non_blocking(appender);
 
     let stdout_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .without_time()
+        .with_level(false)
         .with_target(false)
-        .with_writer(std::io::stdout);
+        .with_writer(std::io::stdout)
+        .with_filter(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("ma_event", LevelFilter::TRACE),
+        );
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
@@ -230,9 +261,8 @@ fn init_logging(slug: &str, config: &WorldConfig) -> Result<tracing_appender::no
         .with_writer(file_writer);
 
     tracing_subscriber::registry()
-        .with(filter)
         .with(stdout_layer)
-        .with(file_layer)
+        .with(file_layer.with_filter(file_filter))
         .init();
 
     Ok(guard)
@@ -254,7 +284,12 @@ fn drain_messages(inbox: &mut ma_core::Inbox<Message>) -> Vec<Message> {
     messages
 }
 
-fn log_inbox_message(message: &Message) {
+fn log_inbox_message(message: &Message, i18n: &Localizer) {
+    info!(
+        target: "ma_event",
+        "{}",
+        i18n.inbox_received(&message.from, &message.to, &message.content_type, &message.id)
+    );
     info!(
         protocol = INBOX_PROTOCOL,
         message_id = %message.id,
@@ -332,7 +367,12 @@ fn build_ma_namespace(services: &[String]) -> Ipld {
     )]))
 }
 
-async fn handle_ipfs_message(config: &WorldConfig, message: &Message) {
+async fn handle_ipfs_message(config: &WorldConfig, message: &Message, i18n: &Localizer) {
+    info!(
+        target: "ma_event",
+        "{}",
+        i18n.ipfs_received(&message.from, &message.to, &message.content_type, &message.id)
+    );
     info!(
         protocol = IPFS_PROTOCOL,
         message_id = %message.id,
@@ -342,12 +382,23 @@ async fn handle_ipfs_message(config: &WorldConfig, message: &Message) {
     );
 
     let reply = handle_ipfs_publish_message(&config.kubo_rpc_api, message).await;
-    log_ipfs_reply(message, &reply);
+    log_ipfs_reply(message, &reply, i18n);
 }
 
-fn log_ipfs_reply(request: &Message, reply: &IpfsRequestReply) {
+fn log_ipfs_reply(request: &Message, reply: &IpfsRequestReply, i18n: &Localizer) {
     match serde_json::to_string(reply) {
         Ok(reply_json) => {
+            info!(
+                target: "ma_event",
+                "{}",
+                i18n.ipfs_reply(
+                    &request.from,
+                    reply.status,
+                    reply.code,
+                    &request.id,
+                    IPFS_REPLY_CONTENT_TYPE,
+                )
+            );
             info!(
                 message_id = %request.id,
                 reply_to = %request.id,

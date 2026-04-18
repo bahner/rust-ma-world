@@ -6,8 +6,9 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 dirs = "6"
+fluent-bundle = "0.15"
 hex = "0.4"
-ma-core = "0.5"
+ma-core = "0.6.2"
 ma-did = "0.4"
 ma-world-core = { path = "../ma-world-core" }
 rand = "0.8"
@@ -18,3 +19,4 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+unic-langid = "0.9"
