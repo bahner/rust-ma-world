@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
         Some(identity) => {
             let did_document_json = generate_world_did_document_from_keys(
                 &owner_did.ipns,
-                &endpoint.services(),
+                &endpoint,
                 &identity.signing_private_key_hex,
                 &identity.encryption_private_key_hex,
             )
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                     .await
                     .with_context(|| format!("ensure kubo key alias '{}'", alias))?;
 
-                let did_document_json = generate_world_did_document_ephemeral(&alias_key.id, &endpoint.services())
+                let did_document_json = generate_world_did_document_ephemeral(&alias_key.id, &endpoint)
                     .with_context(|| format!("marshal startup did document for alias '{}'", alias))?;
 
                 let published = publish_identity_with_kubo_alias(
@@ -330,7 +330,7 @@ fn log_trace_message(protocol: &str, message: &Message) {
 
 fn generate_world_did_document_from_keys(
     ipns: &str,
-    services: &[String],
+    endpoint: &IrohEndpoint,
     signing_private_key_hex: &str,
     encryption_private_key_hex: &str,
 ) -> Result<String> {
@@ -370,8 +370,10 @@ fn generate_world_did_document_from_keys(
     document.assertion_method = vec![signing_vm.id.clone()];
     document.key_agreement = vec![encryption_vm.id.clone()];
 
-    document.set_ma(build_ma_namespace(services));
-    document.touch();
+    document.set_ma(build_ma_namespace(&endpoint.services()));
+    endpoint
+        .reconcile_document_ma_iroh(&mut document)
+        .with_context(|| format!("reconcile ma.iroh for '{}'", ipns))?;
 
     document
         .sign(&signing_key, &signing_vm)
@@ -388,13 +390,13 @@ fn generate_world_did_document_from_keys(
         .with_context(|| format!("marshal did document for '{}'", ipns))
 }
 
-fn generate_world_did_document_ephemeral(ipns: &str, services: &[String]) -> Result<String> {
+fn generate_world_did_document_ephemeral(ipns: &str, endpoint: &IrohEndpoint) -> Result<String> {
     let generated_identity = ma_did::generate_identity(ipns)
         .map_err(|err| anyhow!("generate world did document for '{}': {err}", ipns))?;
 
     generate_world_did_document_from_keys(
         ipns,
-        services,
+        endpoint,
         &generated_identity.signing_private_key_hex,
         &generated_identity.encryption_private_key_hex,
     )

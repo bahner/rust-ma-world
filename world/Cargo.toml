@@ -11,7 +11,7 @@ dirs = "6"
 fluent-bundle = "0.15"
 hex = "0.4"
 libp2p-identity = { version = "0.2", features = ["ed25519", "peerid", "rand"] }
-ma-core = "0.6.2"
+ma-core = "0.6.6"
 ma-did = "0.4"
 ma-world-core = { path = "../ma-world-core" }
 rand = "0.8"
