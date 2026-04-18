@@ -1,0 +1,3 @@
+[workspace]
+members = ["ma-world-core", "world"]
+resolver = "2"

@@ -1,0 +1,20 @@
+[package]
+name = "ma-world"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+dirs = "6"
+hex = "0.4"
+ma-core = "0.5"
+ma-did = "0.4"
+ma-world-core = { path = "../ma-world-core" }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

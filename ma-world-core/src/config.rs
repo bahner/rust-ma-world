@@ -1,0 +1,236 @@
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
+
+use crate::bundle::{decrypt_identity_bundle_json, parse_plain_identity_bundle_json};
+
+#[derive(Debug, Clone)]
+pub struct WorldConfig {
+    pub kubo_rpc_api: String,
+    pub kubo_key_alias: Option<String>,
+    pub owner: String,
+    pub iroh_secret: String,
+    pub log_level: Option<String>,
+    pub log_file: Option<String>,
+    pub unlock_passphrase: Option<String>,
+    pub unlock_bundle_file: Option<String>,
+    pub status_api_bind: String,
+    pub publish_identity_on_startup: bool,
+    pub identity_document_json_file: Option<String>,
+    pub identity_ipns_private_key_base64_file: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartupIdentityMaterial {
+    pub did_document_json: String,
+    pub ipns_private_key_base64: String,
+    pub source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorldConfigFile {
+    kubo_rpc_api: Option<String>,
+    kubo_key_alias: Option<String>,
+    owner: Option<String>,
+    iroh_secret: Option<String>,
+    log_level: Option<String>,
+    log_file: Option<String>,
+    unlock_passphrase: Option<String>,
+    unlock_bundle_file: Option<String>,
+    status_api_bind: Option<String>,
+    publish_identity_on_startup: Option<bool>,
+    identity_document_json_file: Option<String>,
+    identity_ipns_private_key_base64_file: Option<String>,
+}
+
+pub fn ma_config_dir() -> PathBuf {
+    let base = env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|dir| dir.join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+
+    base.join("ma")
+}
+
+pub fn expand_tilde(path: &Path) -> PathBuf {
+    let display = path.to_string_lossy();
+    if !display.starts_with("~/") {
+        return path.to_path_buf();
+    }
+
+    let Some(home) = dirs::home_dir() else {
+        return path.to_path_buf();
+    };
+
+    home.join(display.trim_start_matches("~/"))
+}
+
+pub fn load_world_config(slug: &str) -> Result<(WorldConfig, PathBuf)> {
+    let config_dir = ma_config_dir();
+    let path =
+        find_slug_config_path(&config_dir, slug).unwrap_or_else(|| config_dir.join(format!("{slug}.yaml")));
+
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read config file {}", path.display()))?;
+
+    let file: WorldConfigFile = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("json") => {
+            serde_json::from_str(&raw).with_context(|| format!("parse json {}", path.display()))?
+        }
+        _ => serde_yaml::from_str(&raw).with_context(|| format!("parse yaml {}", path.display()))?,
+    };
+
+    let kubo_rpc_api = file
+        .kubo_rpc_api
+        .ok_or_else(|| anyhow!("missing kubo_rpc_api in {}", path.display()))?;
+    let owner = file
+        .owner
+        .ok_or_else(|| anyhow!("missing owner in {}", path.display()))?;
+
+    let iroh_secret = file
+        .iroh_secret
+        .or_else(|| {
+            find_slug_related_file(&config_dir, slug, "iroh.bin").map(|p| p.display().to_string())
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "missing iroh_secret in {} and could not find {}_iroh.bin or {}.iroh.bin in {}",
+                path.display(),
+                slug,
+                slug,
+                config_dir.display()
+            )
+        })?;
+
+    let unlock_bundle_file = file.unlock_bundle_file.or_else(|| {
+        find_slug_related_file(&config_dir, slug, "bundle.json").map(|p| p.display().to_string())
+    });
+
+    let config = WorldConfig {
+        kubo_rpc_api,
+        kubo_key_alias: file.kubo_key_alias,
+        owner,
+        iroh_secret,
+        log_level: file.log_level,
+        log_file: file.log_file,
+        unlock_passphrase: file.unlock_passphrase,
+        unlock_bundle_file,
+        status_api_bind: file
+            .status_api_bind
+            .unwrap_or_else(|| "127.0.0.1:5002".to_string()),
+        publish_identity_on_startup: file.publish_identity_on_startup.unwrap_or(true),
+        identity_document_json_file: file.identity_document_json_file,
+        identity_ipns_private_key_base64_file: file.identity_ipns_private_key_base64_file,
+    };
+
+    Ok((config, path))
+}
+
+pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<StartupIdentityMaterial>> {
+    if !config.publish_identity_on_startup {
+        return Ok(None);
+    }
+
+    if let (Some(doc_file), Some(key_file)) = (
+        config.identity_document_json_file.as_deref(),
+        config.identity_ipns_private_key_base64_file.as_deref(),
+    ) {
+        let did_document_json = fs::read_to_string(expand_tilde(Path::new(doc_file)))
+            .with_context(|| format!("read identity_document_json_file {doc_file}"))?;
+        let ipns_private_key_base64 = fs::read_to_string(expand_tilde(Path::new(key_file)))
+            .with_context(|| format!("read identity_ipns_private_key_base64_file {key_file}"))?;
+
+        return Ok(Some(StartupIdentityMaterial {
+            did_document_json,
+            ipns_private_key_base64: ipns_private_key_base64.trim().to_string(),
+            source: format!("files: {doc_file}, {key_file}"),
+        }));
+    }
+
+    if let Some(bundle_file) = config.unlock_bundle_file.as_deref() {
+        let bundle_path = expand_tilde(Path::new(bundle_file));
+        let raw = fs::read_to_string(&bundle_path)
+            .with_context(|| format!("read unlock_bundle_file {}", bundle_path.display()))?;
+
+        if let Some(passphrase) = config.unlock_passphrase.as_deref() {
+            let bundle = decrypt_identity_bundle_json(passphrase, &raw).with_context(|| {
+                format!(
+                    "decrypt unlock_bundle_file {} with unlock_passphrase",
+                    bundle_path.display()
+                )
+            })?;
+
+            return Ok(Some(StartupIdentityMaterial {
+                did_document_json: bundle.did_document_json,
+                ipns_private_key_base64: bundle.ipns_private_key_base64.trim().to_string(),
+                source: format!("encrypted unlock_bundle_file: {}", bundle_path.display()),
+            }));
+        }
+
+        if let Ok(bundle) = parse_plain_identity_bundle_json(&raw) {
+            return Ok(Some(StartupIdentityMaterial {
+                did_document_json: bundle.did_document_json,
+                ipns_private_key_base64: bundle.ipns_private_key_base64.trim().to_string(),
+                source: format!("plaintext unlock_bundle_file: {}", bundle_path.display()),
+            }));
+        }
+
+        return Err(anyhow!(
+            "unlock_bundle_file {} is not a supported plaintext bundle and no unlock_passphrase was provided for encrypted bundles",
+            bundle_path.display()
+        ));
+    }
+
+    Ok(None)
+}
+
+fn find_slug_config_path(config_dir: &Path, slug: &str) -> Option<PathBuf> {
+    let preferred = [
+        config_dir.join(format!("{slug}.yaml")),
+        config_dir.join(format!("{slug}.yml")),
+        config_dir.join(format!("{slug}.json")),
+    ];
+    for path in preferred {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let prefix = format!("{slug}.");
+    let Ok(entries) = fs::read_dir(config_dir) else {
+        return None;
+    };
+
+    let mut matches = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn find_slug_related_file(config_dir: &Path, slug: &str, suffix: &str) -> Option<PathBuf> {
+    let candidates = [
+        config_dir.join(format!("{slug}_{suffix}")),
+        config_dir.join(format!("{slug}.{suffix}")),
+        config_dir.join(format!("{slug}-{suffix}")),
+    ];
+
+    for path in candidates {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
