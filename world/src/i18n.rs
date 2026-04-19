@@ -47,17 +47,6 @@ impl Localizer {
         )
     }
 
-    pub fn publish_ok_source(&self, did: &str, source: &str) -> String {
-        self.format("publish-ok-source", [("did", did), ("source", source)])
-    }
-
-    pub fn publish_ok_alias(&self, did: &str, cid: &str, alias: &str) -> String {
-        self.format(
-            "publish-ok-alias",
-            [("did", did), ("cid", cid), ("alias", alias)],
-        )
-    }
-
     pub fn inbox_received(&self, from: &str, to: &str, content_type: &str, id: &str) -> String {
         self.format(
             "inbox-received",

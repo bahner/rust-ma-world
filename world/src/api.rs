@@ -2,75 +2,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct WorldStatus {
-    pub slug: String,
-    pub owner: String,
-    pub config_path: String,
-    pub status_api_bind: String,
-    pub ipns_endpoint: Option<String>,
-    pub started_at_unix: u64,
-    pub endpoint_id: Option<String>,
-    pub services: Vec<String>,
-    pub inbox_messages: u64,
-    pub ipfs_messages: u64,
-    pub last_inbox_at_unix: Option<u64>,
-    pub last_ipfs_at_unix: Option<u64>,
-}
-
-pub type SharedWorldStatus = Arc<RwLock<WorldStatus>>;
-
-pub fn new_shared_status(
-    slug: String,
-    owner: String,
-    config_path: String,
-    status_api_bind: String,
-    ipns_endpoint: Option<String>,
-    started_at_unix: u64,
-) -> SharedWorldStatus {
-    Arc::new(RwLock::new(WorldStatus {
-        slug,
-        owner,
-        config_path,
-        status_api_bind,
-        ipns_endpoint,
-        started_at_unix,
-        endpoint_id: None,
-        services: Vec::new(),
-        inbox_messages: 0,
-        ipfs_messages: 0,
-        last_inbox_at_unix: None,
-        last_ipfs_at_unix: None,
-    }))
-}
-
-pub async fn set_endpoint_metadata(
-    status: &SharedWorldStatus,
-    endpoint_id: String,
-    services: Vec<String>,
-) {
-    let mut state = status.write().await;
-    state.endpoint_id = Some(endpoint_id);
-    state.services = services;
-}
-
-pub async fn mark_inbox(status: &SharedWorldStatus, now_unix: u64) {
-    let mut state = status.write().await;
-    state.inbox_messages += 1;
-    state.last_inbox_at_unix = Some(now_unix);
-}
-
-pub async fn mark_ipfs(status: &SharedWorldStatus, now_unix: u64) {
-    let mut state = status.write().await;
-    state.ipfs_messages += 1;
-    state.last_ipfs_at_unix = Some(now_unix);
-}
+use crate::status::SharedWorldStatus;
 
 pub async fn run_status_api(bind: String, status: SharedWorldStatus) -> Result<()> {
     let listener = TcpListener::bind(&bind)

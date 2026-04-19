@@ -1,10 +1,18 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
-use api::{mark_inbox, mark_ipfs, new_shared_status, run_status_api, set_endpoint_metadata};
+use api::run_status_api;
+use status::{
+    configure_startup_publish,
+    mark_inbox,
+    mark_ipfs,
+    mark_startup_publish_skipped,
+    new_shared_status,
+    set_endpoint_metadata,
+};
 use config::{generate_headless_config, parse_args};
 use i18n::Localizer;
 use ma_did::Ipld;
@@ -24,11 +32,10 @@ use ma_world_core::{
     config::{expand_tilde, load_startup_identity_material, load_world_config, WorldConfig},
     ensure_kubo_key_alias,
     handle_ipfs_publish_message,
-    publish_identity_document,
-    publish_identity_with_kubo_alias,
     IpfsRequestReply,
     IPFS_REPLY_CONTENT_TYPE,
 };
+use startup_publish::{retry_publish_identity, retry_publish_identity_alias};
 use tracing::{error, info, trace, warn};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -38,6 +45,8 @@ use tracing_subscriber::Layer;
 mod api;
 mod config;
 mod i18n;
+mod startup_publish;
+mod status;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -78,8 +87,28 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("missing iroh secret file: {}", iroh_secret.display()))?;
 
     let mut endpoint = IrohEndpoint::new(secret).await?;
+    info!(
+        target: "ma_event",
+        "router booted: endpoint={}", endpoint.id()
+    );
+
     let mut inbox_messages = endpoint.service(INBOX_PROTOCOL_STR);
+    info!(
+        target: "ma_event",
+        "router service attached: {}", INBOX_PROTOCOL_STR
+    );
+
     let mut ipfs_messages = endpoint.service(IPFS_PROTOCOL_STR);
+    info!(
+        target: "ma_event",
+        "router service attached: {}", IPFS_PROTOCOL_STR
+    );
+
+    endpoint.start_router();
+    info!(
+        target: "ma_event",
+        "router listener started"
+    );
 
     info!(endpoint_id = %endpoint.id(), "endpoint started");
     info!(services = ?endpoint.services(), "registered services");
@@ -88,75 +117,6 @@ async fn main() -> Result<()> {
         "{}",
         i18n.world_online(&config.owner, &endpoint.id().to_string(), &endpoint.services().join(","))
     );
-
-    match load_startup_identity_material(&config)? {
-        Some(identity) => {
-            let did_document_json = generate_world_did_document_from_keys(
-                &owner_did.ipns,
-                &endpoint,
-                &identity.signing_private_key_hex,
-                &identity.encryption_private_key_hex,
-            )
-                .with_context(|| format!("generate startup did document for '{}'", owner_did.ipns))?;
-
-            let published = publish_identity_document(
-                &config.kubo_rpc_api,
-                &owner_did.ipns,
-                &did_document_json,
-                &identity.ipns_private_key_base64,
-            )
-            .await
-            .with_context(|| format!("startup identity publish from {}", identity.source))?;
-
-            info!(
-                did = %published.as_deref().unwrap_or("unknown"),
-                source = %identity.source,
-                "world identity published to kubo/ipns on startup"
-            );
-            info!(
-                target: "ma_event",
-                "{}",
-                i18n.publish_ok_source(
-                    published.as_deref().unwrap_or("unknown"),
-                    &identity.source,
-                )
-            );
-        }
-        None => {
-            if let Some(alias) = config.kubo_key_alias.as_deref() {
-                let alias_key = ensure_kubo_key_alias(&config.kubo_rpc_api, alias)
-                    .await
-                    .with_context(|| format!("ensure kubo key alias '{}'", alias))?;
-
-                let did_document_json = generate_world_did_document_ephemeral(&alias_key.id, &endpoint)
-                    .with_context(|| format!("marshal startup did document for alias '{}'", alias))?;
-
-                let published = publish_identity_with_kubo_alias(
-                    &config.kubo_rpc_api,
-                    alias,
-                    &did_document_json,
-                )
-                .await
-                .with_context(|| format!("startup identity publish via kubo alias '{}'", alias))?;
-
-                info!(
-                    did = %published.did,
-                    cid = %published.cid,
-                    kubo_key_alias = %alias,
-                    "world identity published to kubo/ipns on startup"
-                );
-                info!(
-                    target: "ma_event",
-                    "{}",
-                    i18n.publish_ok_alias(&published.did, &published.cid, alias)
-                );
-            } else {
-                warn!(
-                    "startup identity publish skipped: no identity material found and no kubo_key_alias configured"
-                );
-            }
-        }
-    }
 
     let status = new_shared_status(
         slug.clone(),
@@ -167,6 +127,112 @@ async fn main() -> Result<()> {
         now_unix_secs(),
     );
 
+    // Spawn background task for identity publication (non-blocking startup).
+    let publish_task = if let Some(identity) = load_startup_identity_material(&config)? {
+        configure_startup_publish(
+            &status,
+            "identity-material",
+            10,
+            Some(identity.source.clone()),
+            None,
+        ).await;
+
+        let did_document_json = generate_world_did_document_from_keys(
+            &owner_did.ipns,
+            &endpoint,
+            &identity.signing_private_key_hex,
+            &identity.encryption_private_key_hex,
+        )
+            .with_context(|| format!("generate startup did document for '{}'", owner_did.ipns))?;
+
+        let kubo_rpc_api = config.kubo_rpc_api.clone();
+        let ipns_id = owner_did.ipns.clone();
+        let ipns_key_base64 = identity.ipns_private_key_base64.clone();
+        let source_label = identity.source.clone();
+        let publish_status = status.clone();
+
+        Some(tokio::spawn(async move {
+            match retry_publish_identity(
+                publish_status,
+                &kubo_rpc_api,
+                &ipns_id,
+                &did_document_json,
+                &ipns_key_base64,
+                10,
+            ).await {
+                Ok(published_did) => {
+                    info!(
+                        target: "ma_event",
+                        "identity published: {} from source: {}",
+                        published_did,
+                        source_label
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        source = %source_label,
+                        "startup identity publish failed after retries"
+                    );
+                }
+            }
+        }))
+    } else if let Some(alias) = config.kubo_key_alias.as_deref() {
+        configure_startup_publish(
+            &status,
+            "kubo-key-alias",
+            10,
+            None,
+            Some(alias.to_string()),
+        ).await;
+
+        let alias_key = ensure_kubo_key_alias(&config.kubo_rpc_api, alias)
+            .await
+            .with_context(|| format!("ensure kubo key alias '{}'", alias))?;
+
+        let did_document_json = generate_world_did_document_ephemeral(&alias_key.id, &endpoint)
+            .with_context(|| format!("marshal startup did document for alias '{}'", alias))?;
+
+        let kubo_rpc_api = config.kubo_rpc_api.clone();
+        let alias_name = alias.to_string();
+        let publish_status = status.clone();
+
+        Some(tokio::spawn(async move {
+            match retry_publish_identity_alias(
+                publish_status,
+                &kubo_rpc_api,
+                &alias_name,
+                &did_document_json,
+                10,
+            ).await {
+                Ok((did, cid)) => {
+                    info!(
+                        target: "ma_event",
+                        "identity published: did={} cid={} alias={}",
+                        did,
+                        cid,
+                        alias_name
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        alias = %alias_name,
+                        "alias identity publish failed after retries"
+                    );
+                }
+            }
+        }))
+    } else {
+        warn!("startup identity publish skipped: no identity material found and no kubo_key_alias configured");
+        mark_startup_publish_skipped(
+            &status,
+            "no identity material found and no kubo_key_alias configured".to_string(),
+        ).await;
+        None
+    };
+    drop(publish_task);  // Background task runs independently
+
     let mut status_api_task = tokio::spawn(run_status_api(
         config.status_api_bind.clone(),
         status.clone(),
@@ -175,19 +241,41 @@ async fn main() -> Result<()> {
     set_endpoint_metadata(&status, endpoint.id().to_string(), endpoint.services()).await;
 
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
+    let mut heartbeat_at = Instant::now();
+    let mut inbox_total: u64 = 0;
+    let mut ipfs_total: u64 = 0;
+
+    info!(
+        target: "ma_event",
+        "router loop active: polling every {}ms", 100
+    );
+
     loop {
         tokio::select! {
             _ = ticker.tick() => {
                 for message in drain_messages(&mut inbox_messages) {
+                    inbox_total += 1;
                     mark_inbox(&status, now_unix_secs()).await;
                     log_inbox_message(&message, &i18n);
                     log_trace_message(INBOX_PROTOCOL_STR, &message);
                 }
 
                 for message in drain_messages(&mut ipfs_messages) {
+                    ipfs_total += 1;
                     mark_ipfs(&status, now_unix_secs()).await;
                     log_trace_message(IPFS_PROTOCOL_STR, &message);
                     handle_ipfs_message(&config, &message, &i18n).await;
+                }
+
+                if heartbeat_at.elapsed() >= Duration::from_secs(5) {
+                    info!(
+                        target: "ma_event",
+                        "router heartbeat: endpoint={} inbox_total={} ipfs_total={}",
+                        endpoint.id(),
+                        inbox_total,
+                        ipfs_total,
+                    );
+                    heartbeat_at = Instant::now();
                 }
             }
             status_result = &mut status_api_task => {
@@ -373,7 +461,7 @@ fn generate_world_did_document_from_keys(
     document.set_ma(build_ma_namespace(&endpoint.services()));
     endpoint
         .reconcile_document_ma_iroh(&mut document)
-        .with_context(|| format!("reconcile ma.iroh for '{}'", ipns))?;
+        .with_context(|| format!("reconcile endpoint metadata for '{}'", ipns))?;
 
     document
         .sign(&signing_key, &signing_vm)
@@ -460,3 +548,4 @@ fn log_ipfs_reply(request: &Message, reply: &IpfsRequestReply, i18n: &Localizer)
         }
     }
 }
+

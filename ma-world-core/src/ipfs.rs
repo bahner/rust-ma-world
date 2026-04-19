@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use ma_core::{ipfs_publish::publish_did_document_to_kubo, Did, Document, Message, CONTENT_TYPE_IPFS_REQUEST};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 pub const IPFS_REPLY_CONTENT_TYPE: &str = "application/x-ipfs-request-reply";
 
@@ -28,6 +29,14 @@ struct IpfsPublishRequest {
 
 pub async fn handle_ipfs_publish_message(kubo_rpc_api: &str, message: &Message) -> IpfsRequestReply {
     if message.content_type != CONTENT_TYPE_IPFS_REQUEST {
+        warn!(
+            message_id = %message.id,
+            from = %message.from,
+            to = %message.to,
+            content_type = %message.content_type,
+            expected_content_type = CONTENT_TYPE_IPFS_REQUEST,
+            "invalid ipfs publish message"
+        );
         return IpfsRequestReply {
             status: 400,
             code: "bad-request",
@@ -53,6 +62,15 @@ pub async fn handle_ipfs_publish_message(kubo_rpc_api: &str, message: &Message) 
         Err(err) => {
             let err_text = err.to_string();
             let (status, code) = map_ipfs_error(&err_text);
+            warn!(
+                message_id = %message.id,
+                from = %message.from,
+                to = %message.to,
+                code = code,
+                status = status,
+                error = %err_text,
+                "ipfs publish request rejected"
+            );
             IpfsRequestReply {
                 status,
                 code,
