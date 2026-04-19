@@ -46,7 +46,9 @@ async fn handle_status_connection(
     info!(peer = %peer, request_line = %request_line, "status api incoming request");
     debug!(peer = %peer, request_line = %request_line, "status api request");
 
-    if request_line.starts_with("GET /status.json ") || request_line.starts_with("GET /status.json?") {
+    if request_line.starts_with("GET /status.json ")
+        || request_line.starts_with("GET /status.json?")
+    {
         let snapshot = { status.read().await.clone() };
         let body = serde_json::to_vec(&snapshot)?;
         write_http_response(stream, 200, "OK", "application/json", &body).await?;

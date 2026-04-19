@@ -134,11 +134,7 @@ pub async fn configure_startup_publish(
     state.startup_publish.detail = None;
 }
 
-pub async fn mark_startup_publish_attempt(
-    status: &SharedWorldStatus,
-    now_unix: u64,
-    attempt: u32,
-) {
+pub async fn mark_startup_publish_attempt(status: &SharedWorldStatus, now_unix: u64, attempt: u32) {
     let mut state = status.write().await;
     state.startup_publish.state = "running".to_string();
     state.startup_publish.attempts = attempt;

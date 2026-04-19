@@ -1,41 +1,26 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use api::run_status_api;
-use status::{
-    configure_startup_publish,
-    mark_inbox,
-    mark_ipfs,
-    mark_startup_publish_skipped,
-    new_shared_status,
-    set_endpoint_metadata,
-};
 use config::{generate_headless_config, parse_args};
 use i18n::Localizer;
-use ma_did::Ipld;
 use ma_core::{
-    Document,
-    EncryptionKey,
-    identity::load_secret_key_bytes,
-    Did,
-    IrohEndpoint,
-    MaEndpoint,
-    Message,
-    SigningKey,
-    VerificationMethod,
-    INBOX_PROTOCOL, IPFS_PROTOCOL,
+    identity::load_secret_key_bytes, Did, IrohEndpoint, MaEndpoint, Message, INBOX_PROTOCOL,
+    IPFS_PROTOCOL,
 };
 use ma_world_core::{
     config::{expand_tilde, load_startup_identity_material, load_world_config, WorldConfig},
-    ensure_kubo_key_alias,
-    handle_ipfs_publish_message,
-    IpfsRequestReply,
+    ensure_kubo_key_alias, generate_world_did_document_ephemeral,
+    generate_world_did_document_from_keys, handle_ipfs_publish_message, IpfsRequestReply,
     IPFS_REPLY_CONTENT_TYPE,
 };
 use startup_publish::{retry_publish_identity, retry_publish_identity_alias};
+use status::{
+    configure_startup_publish, mark_inbox, mark_ipfs, mark_startup_publish_skipped,
+    new_shared_status, set_endpoint_metadata,
+};
 use tracing::{error, info, trace, warn};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -55,7 +40,10 @@ async fn main() -> Result<()> {
 
     if cli.gen_headless_config {
         let config_path = generate_headless_config(&cli).await?;
-        println!("{}", boot_i18n.generated_headless_config(&config_path.display().to_string()));
+        println!(
+            "{}",
+            boot_i18n.generated_headless_config(&config_path.display().to_string())
+        );
         return Ok(());
     }
 
@@ -135,7 +123,8 @@ async fn main() -> Result<()> {
             10,
             Some(identity.source.clone()),
             None,
-        ).await;
+        )
+        .await;
 
         let did_document_json = generate_world_did_document_from_keys(
             &owner_did.ipns,
@@ -143,7 +132,7 @@ async fn main() -> Result<()> {
             &identity.signing_private_key_hex,
             &identity.encryption_private_key_hex,
         )
-            .with_context(|| format!("generate startup did document for '{}'", owner_did.ipns))?;
+        .with_context(|| format!("generate startup did document for '{}'", owner_did.ipns))?;
 
         let kubo_rpc_api = config.kubo_rpc_api.clone();
         let ipns_id = owner_did.ipns.clone();
@@ -159,7 +148,9 @@ async fn main() -> Result<()> {
                 &did_document_json,
                 &ipns_key_base64,
                 10,
-            ).await {
+            )
+            .await
+            {
                 Ok(published_did) => {
                     info!(
                         target: "ma_event",
@@ -178,13 +169,8 @@ async fn main() -> Result<()> {
             }
         }))
     } else if let Some(alias) = config.kubo_key_alias.as_deref() {
-        configure_startup_publish(
-            &status,
-            "kubo-key-alias",
-            10,
-            None,
-            Some(alias.to_string()),
-        ).await;
+        configure_startup_publish(&status, "kubo-key-alias", 10, None, Some(alias.to_string()))
+            .await;
 
         let alias_key = ensure_kubo_key_alias(&config.kubo_rpc_api, alias)
             .await
@@ -204,7 +190,9 @@ async fn main() -> Result<()> {
                 &alias_name,
                 &did_document_json,
                 10,
-            ).await {
+            )
+            .await
+            {
                 Ok((did, cid)) => {
                     info!(
                         target: "ma_event",
@@ -228,10 +216,11 @@ async fn main() -> Result<()> {
         mark_startup_publish_skipped(
             &status,
             "no identity material found and no kubo_key_alias configured".to_string(),
-        ).await;
+        )
+        .await;
         None
     };
-    drop(publish_task);  // Background task runs independently
+    drop(publish_task); // Background task runs independently
 
     let mut status_api_task = tokio::spawn(run_status_api(
         config.status_api_bind.clone(),
@@ -309,7 +298,10 @@ async fn main() -> Result<()> {
 const INBOX_PROTOCOL_STR: &str = "/ma/inbox/0.0.1";
 const IPFS_PROTOCOL_STR: &str = "/ma/ipfs/0.0.1";
 
-fn init_logging(slug: &str, config: &WorldConfig) -> Result<tracing_appender::non_blocking::WorkerGuard> {
+fn init_logging(
+    slug: &str,
+    config: &WorldConfig,
+) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     let level = config.log_level.as_deref().unwrap_or("info");
     let file_filter = tracing_subscriber::EnvFilter::try_new(level)
         .with_context(|| format!("invalid log level/filter: {level}"))?;
@@ -349,8 +341,7 @@ fn init_logging(slug: &str, config: &WorldConfig) -> Result<tracing_appender::no
         .with_target(false)
         .with_writer(std::io::stdout)
         .with_filter(
-            tracing_subscriber::filter::Targets::new()
-                .with_target("ma_event", LevelFilter::TRACE),
+            tracing_subscriber::filter::Targets::new().with_target("ma_event", LevelFilter::TRACE),
         );
 
     let file_layer = tracing_subscriber::fmt::layer()
@@ -416,87 +407,6 @@ fn log_trace_message(protocol: &str, message: &Message) {
     );
 }
 
-fn generate_world_did_document_from_keys(
-    ipns: &str,
-    endpoint: &IrohEndpoint,
-    signing_private_key_hex: &str,
-    encryption_private_key_hex: &str,
-) -> Result<String> {
-    let root_did = Did::new_url(ipns, None::<String>)
-        .with_context(|| format!("build root did for '{}'", ipns))?;
-    let signing_did = Did::new_url(ipns, Some("signing".to_string()))
-        .with_context(|| format!("build signing did for '{}'", ipns))?;
-    let encryption_did = Did::new_url(ipns, Some("encryption".to_string()))
-        .with_context(|| format!("build encryption did for '{}'", ipns))?;
-
-    let signing_key_bytes: [u8; 32] = hex::decode(signing_private_key_hex.trim())
-        .with_context(|| format!("decode signing key hex for '{}'", ipns))?
-        .try_into()
-        .map_err(|_| anyhow!("invalid signing key length for '{}'", ipns))?;
-    let encryption_key_bytes: [u8; 32] = hex::decode(encryption_private_key_hex.trim())
-        .with_context(|| format!("decode encryption key hex for '{}'", ipns))?
-        .try_into()
-        .map_err(|_| anyhow!("invalid encryption key length for '{}'", ipns))?;
-
-    let signing_key = SigningKey::from_private_key_bytes(signing_did, signing_key_bytes)
-        .with_context(|| format!("reconstruct signing key for '{}'", ipns))?;
-    let encryption_key = EncryptionKey::from_private_key_bytes(encryption_did, encryption_key_bytes)
-        .with_context(|| format!("reconstruct encryption key for '{}'", ipns))?;
-
-    let signing_vm = VerificationMethod::try_from(&signing_key)
-        .with_context(|| format!("build signing verification method for '{}'", ipns))?;
-    let encryption_vm = VerificationMethod::try_from(&encryption_key)
-        .with_context(|| format!("build encryption verification method for '{}'", ipns))?;
-
-    let mut document = Document::new(&root_did, &root_did);
-    document
-        .add_verification_method(signing_vm.clone())
-        .with_context(|| format!("add signing verification method for '{}'", ipns))?;
-    document
-        .add_verification_method(encryption_vm.clone())
-        .with_context(|| format!("add encryption verification method for '{}'", ipns))?;
-    document.assertion_method = vec![signing_vm.id.clone()];
-    document.key_agreement = vec![encryption_vm.id.clone()];
-
-    document.set_ma(build_ma_namespace(&endpoint.services()));
-    endpoint
-        .reconcile_document_ma_iroh(&mut document)
-        .with_context(|| format!("reconcile endpoint metadata for '{}'", ipns))?;
-
-    document
-        .sign(&signing_key, &signing_vm)
-        .with_context(|| format!("sign did document for '{}'", ipns))?;
-    document
-        .validate()
-        .with_context(|| format!("validate did document for '{}'", ipns))?;
-    document
-        .verify()
-        .with_context(|| format!("verify did document for '{}'", ipns))?;
-
-    document
-        .marshal()
-        .with_context(|| format!("marshal did document for '{}'", ipns))
-}
-
-fn generate_world_did_document_ephemeral(ipns: &str, endpoint: &IrohEndpoint) -> Result<String> {
-    let generated_identity = ma_did::generate_identity(ipns)
-        .map_err(|err| anyhow!("generate world did document for '{}': {err}", ipns))?;
-
-    generate_world_did_document_from_keys(
-        ipns,
-        endpoint,
-        &generated_identity.signing_private_key_hex,
-        &generated_identity.encryption_private_key_hex,
-    )
-}
-
-fn build_ma_namespace(services: &[String]) -> Ipld {
-    Ipld::Map(BTreeMap::from([(
-        "services".to_string(),
-        Ipld::List(services.iter().cloned().map(Ipld::String).collect()),
-    )]))
-}
-
 async fn handle_ipfs_message(config: &WorldConfig, message: &Message, i18n: &Localizer) {
     info!(
         target: "ma_event",
@@ -548,4 +458,3 @@ fn log_ipfs_reply(request: &Message, reply: &IpfsRequestReply, i18n: &Localizer)
         }
     }
 }
-

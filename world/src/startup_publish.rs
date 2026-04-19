@@ -4,11 +4,8 @@ use anyhow::{anyhow, Result};
 use tracing::{info, warn};
 
 use crate::status::{
-    mark_startup_publish_attempt,
-    mark_startup_publish_failed,
-    mark_startup_publish_retry,
-    mark_startup_publish_succeeded,
-    SharedWorldStatus,
+    mark_startup_publish_attempt, mark_startup_publish_failed, mark_startup_publish_retry,
+    mark_startup_publish_succeeded, SharedWorldStatus,
 };
 use ma_world_core::{publish_identity_document, publish_identity_with_kubo_alias};
 
@@ -36,11 +33,17 @@ pub async fn retry_publish_identity(
         {
             Ok(Some(did)) => {
                 mark_startup_publish_succeeded(&status, now, did.clone(), None).await;
-                info!("startup identity published successfully on attempt {}", attempt);
+                info!(
+                    "startup identity published successfully on attempt {}",
+                    attempt
+                );
                 return Ok(did);
             }
             Ok(None) => {
-                let error_text = format!("startup identity publish returned None on attempt {}", attempt);
+                let error_text = format!(
+                    "startup identity publish returned None on attempt {}",
+                    attempt
+                );
                 warn!("{}", error_text);
 
                 if attempt >= max_retries {
@@ -52,8 +55,13 @@ pub async fn retry_publish_identity(
                 }
 
                 let backoff_secs = fibonacci_backoff_secs(attempt);
-                mark_startup_publish_retry(&status, error_text, now.saturating_add(backoff_secs)).await;
-                warn!(attempt = attempt, next_retry_in_secs = backoff_secs, "retrying startup identity publish after backoff");
+                mark_startup_publish_retry(&status, error_text, now.saturating_add(backoff_secs))
+                    .await;
+                warn!(
+                    attempt = attempt,
+                    next_retry_in_secs = backoff_secs,
+                    "retrying startup identity publish after backoff"
+                );
                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
             }
             Err(err) => {
@@ -69,8 +77,13 @@ pub async fn retry_publish_identity(
                 }
 
                 let backoff_secs = fibonacci_backoff_secs(attempt);
-                mark_startup_publish_retry(&status, error_text, now.saturating_add(backoff_secs)).await;
-                warn!(attempt = attempt, next_retry_in_secs = backoff_secs, "retrying startup identity publish after backoff");
+                mark_startup_publish_retry(&status, error_text, now.saturating_add(backoff_secs))
+                    .await;
+                warn!(
+                    attempt = attempt,
+                    next_retry_in_secs = backoff_secs,
+                    "retrying startup identity publish after backoff"
+                );
                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
             }
         }
@@ -90,7 +103,9 @@ pub async fn retry_publish_identity_alias(
         let now = now_unix_secs();
         mark_startup_publish_attempt(&status, now, attempt).await;
 
-        match publish_identity_with_kubo_alias(kubo_rpc_api, kubo_key_alias, did_document_json).await {
+        match publish_identity_with_kubo_alias(kubo_rpc_api, kubo_key_alias, did_document_json)
+            .await
+        {
             Ok(result) => {
                 mark_startup_publish_succeeded(
                     &status,
@@ -99,7 +114,10 @@ pub async fn retry_publish_identity_alias(
                     Some(result.cid.clone()),
                 )
                 .await;
-                info!("alias identity published successfully on attempt {}", attempt);
+                info!(
+                    "alias identity published successfully on attempt {}",
+                    attempt
+                );
                 return Ok((result.did, result.cid));
             }
             Err(err) => {
@@ -115,8 +133,13 @@ pub async fn retry_publish_identity_alias(
                 }
 
                 let backoff_secs = fibonacci_backoff_secs(attempt);
-                mark_startup_publish_retry(&status, error_text, now.saturating_add(backoff_secs)).await;
-                warn!(attempt = attempt, next_retry_in_secs = backoff_secs, "retrying alias identity publish after backoff");
+                mark_startup_publish_retry(&status, error_text, now.saturating_add(backoff_secs))
+                    .await;
+                warn!(
+                    attempt = attempt,
+                    next_retry_in_secs = backoff_secs,
+                    "retrying alias identity publish after backoff"
+                );
                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
             }
         }

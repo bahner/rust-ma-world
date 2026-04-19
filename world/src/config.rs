@@ -2,16 +2,18 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::i18n::{Localizer, DEFAULT_LOCALE};
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use cid::multibase::Base;
 use cid::Cid;
-use crate::i18n::{Localizer, DEFAULT_LOCALE};
 use libp2p_identity::Keypair;
 use ma_core::{identity::generate_secret_key_file, Document};
 use ma_did::generate_identity;
-use ma_world_core::bundle::{encrypt_identity_bundle_json, parse_plain_identity_bundle_json, PlainIdentityBundle};
+use ma_world_core::bundle::{
+    encrypt_identity_bundle_json, parse_plain_identity_bundle_json, PlainIdentityBundle,
+};
 use ma_world_core::config::{ma_config_dir, write_secret_file_secure};
 use rand::RngCore;
 use serde::Serialize;
@@ -155,7 +157,10 @@ pub async fn generate_headless_config(cli: &CliArgs) -> Result<PathBuf> {
     Ok(config_path)
 }
 
-fn load_or_create_identity_bundle(bundle_path: &PathBuf, passphrase_path: &PathBuf) -> Result<PlainIdentityBundle> {
+fn load_or_create_identity_bundle(
+    bundle_path: &PathBuf,
+    passphrase_path: &PathBuf,
+) -> Result<PlainIdentityBundle> {
     match (bundle_path.exists(), passphrase_path.exists()) {
         (true, true) => {
             let raw = fs::read_to_string(bundle_path)

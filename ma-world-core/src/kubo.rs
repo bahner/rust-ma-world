@@ -1,17 +1,12 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use ma_core::{Did, Document};
 use ma_core::ipfs_publish::publish_did_document_to_kubo;
+use ma_core::{Did, Document};
 use serde::Serialize;
 
 use ma_core::kubo::{
-    dag_put,
-    generate_key,
-    list_keys,
-    name_publish_with_retry,
-    wait_for_api,
-    IpnsPublishOptions,
+    dag_put, generate_key, list_keys, name_publish_with_retry, wait_for_api, IpnsPublishOptions,
     KuboKey,
 };
 
@@ -33,9 +28,11 @@ pub async fn publish_identity_document(
         // Key already in Kubo — publish without re-importing
         let document = Document::unmarshal(did_document_json)
             .map_err(|err| anyhow!("invalid DID document JSON: {err}"))?;
-        document.validate()
+        document
+            .validate()
             .map_err(|err| anyhow!("invalid DID document: {err}"))?;
-        document.verify()
+        document
+            .verify()
             .map_err(|err| anyhow!("DID document signature verification failed: {err}"))?;
 
         let cid = dag_put(kubo_rpc_api, &document).await?;
@@ -63,10 +60,7 @@ pub struct IdentityPublishResult {
     pub cid: String,
 }
 
-pub async fn ensure_kubo_key_alias(
-    kubo_rpc_api: &str,
-    alias: &str,
-) -> Result<KuboKey> {
+pub async fn ensure_kubo_key_alias(kubo_rpc_api: &str, alias: &str) -> Result<KuboKey> {
     wait_for_api(kubo_rpc_api, 10).await?;
 
     let alias = alias.trim();

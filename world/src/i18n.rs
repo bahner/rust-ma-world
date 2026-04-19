@@ -15,13 +15,19 @@ pub struct Localizer {
 impl Localizer {
     pub fn new(config_locale: Option<&str>) -> Result<Self> {
         let selected_locale = normalize_locale(config_locale);
-        let lang_id: LanguageIdentifier = selected_locale.langid
+        let lang_id: LanguageIdentifier = selected_locale
+            .langid
             .parse()
             .with_context(|| format!("invalid locale tag: {}", selected_locale.langid))?;
 
         let mut bundle = FluentBundle::new(vec![lang_id]);
-        let resource = FluentResource::try_new(selected_locale.ftl.to_string())
-            .map_err(|error| anyhow!("failed to parse {} fluent resource: {error:?}", selected_locale.key))?;
+        let resource =
+            FluentResource::try_new(selected_locale.ftl.to_string()).map_err(|error| {
+                anyhow!(
+                    "failed to parse {} fluent resource: {error:?}",
+                    selected_locale.key
+                )
+            })?;
         bundle
             .add_resource(resource)
             .map_err(|_| anyhow!("failed to add {} fluent resource", selected_locale.key))?;
@@ -39,11 +45,7 @@ impl Localizer {
     pub fn world_online(&self, did: &str, endpoint: &str, services: &str) -> String {
         self.format(
             "world-online",
-            [
-                ("did", did),
-                ("endpoint", endpoint),
-                ("services", services),
-            ],
+            [("did", did), ("endpoint", endpoint), ("services", services)],
         )
     }
 
@@ -71,7 +73,14 @@ impl Localizer {
         )
     }
 
-    pub fn ipfs_reply(&self, to: &str, status: u16, code: &str, id: &str, content_type: &str) -> String {
+    pub fn ipfs_reply(
+        &self,
+        to: &str,
+        status: u16,
+        code: &str,
+        id: &str,
+        content_type: &str,
+    ) -> String {
         self.format(
             "ipfs-reply",
             [

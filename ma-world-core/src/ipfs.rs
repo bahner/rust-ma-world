@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use ma_core::{ipfs_publish::publish_did_document_to_kubo, Did, Document, Message, CONTENT_TYPE_IPFS_REQUEST};
+use ma_core::{
+    ipfs_publish::publish_did_document_to_kubo, Did, Document, Message, CONTENT_TYPE_IPFS_REQUEST,
+};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -27,7 +29,10 @@ struct IpfsPublishRequest {
     ipns_private_key_base64: String,
 }
 
-pub async fn handle_ipfs_publish_message(kubo_rpc_api: &str, message: &Message) -> IpfsRequestReply {
+pub async fn handle_ipfs_publish_message(
+    kubo_rpc_api: &str,
+    message: &Message,
+) -> IpfsRequestReply {
     if message.content_type != CONTENT_TYPE_IPFS_REQUEST {
         warn!(
             message_id = %message.id,
@@ -83,7 +88,10 @@ pub async fn handle_ipfs_publish_message(kubo_rpc_api: &str, message: &Message) 
     }
 }
 
-async fn process_ipfs_publish_request(kubo_rpc_api: &str, message: &Message) -> Result<(String, String)> {
+async fn process_ipfs_publish_request(
+    kubo_rpc_api: &str,
+    message: &Message,
+) -> Result<(String, String)> {
     let request: IpfsPublishRequest = serde_json::from_slice(&message.content)
         .map_err(|err| anyhow!("invalid IPFS publish payload: {err}"))?;
 
@@ -127,9 +135,13 @@ async fn process_ipfs_publish_request(kubo_rpc_api: &str, message: &Message) -> 
         .marshal()
         .map_err(|err| anyhow!("failed to marshal DID document to JSON for publish: {err}"))?;
 
-    let cid = publish_did_document_to_kubo(kubo_rpc_api, &document_json, &request.ipns_private_key_base64)
-        .await?
-        .ok_or_else(|| anyhow!("publish succeeded without cid"))?;
+    let cid = publish_did_document_to_kubo(
+        kubo_rpc_api,
+        &document_json,
+        &request.ipns_private_key_base64,
+    )
+    .await?
+    .ok_or_else(|| anyhow!("publish succeeded without cid"))?;
 
     let document_did = Did::try_from(document.id.as_str())
         .map_err(|err| anyhow!("invalid document DID '{}': {err}", document.id))?;

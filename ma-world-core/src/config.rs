@@ -123,7 +123,13 @@ fn apply_windows_private_dacl(path: &Path) -> Result<()> {
     }
 
     let grant_acl = Command::new("icacls")
-        .args([&path_arg, "/grant:r", &user_grant, "SYSTEM:F", "Administrators:F"])
+        .args([
+            &path_arg,
+            "/grant:r",
+            &user_grant,
+            "SYSTEM:F",
+            "Administrators:F",
+        ])
         .status()
         .with_context(|| format!("run icacls grant for {}", path.display()))?;
     if !grant_acl.success() {
@@ -151,18 +157,19 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
 
 pub fn load_world_config(slug: &str) -> Result<(WorldConfig, PathBuf)> {
     let config_dir = ma_config_dir();
-    let path =
-        find_slug_config_path(&config_dir, slug).unwrap_or_else(|| config_dir.join(format!("{slug}.yaml")));
+    let path = find_slug_config_path(&config_dir, slug)
+        .unwrap_or_else(|| config_dir.join(format!("{slug}.yaml")));
 
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("read config file {}", path.display()))?;
 
-    let file: WorldConfigFile = match path.extension().and_then(|ext| ext.to_str()) {
-        Some("json") => {
-            serde_json::from_str(&raw).with_context(|| format!("parse json {}", path.display()))?
-        }
-        _ => serde_yaml::from_str(&raw).with_context(|| format!("parse yaml {}", path.display()))?,
-    };
+    let file: WorldConfigFile =
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("json") => serde_json::from_str(&raw)
+                .with_context(|| format!("parse json {}", path.display()))?,
+            _ => serde_yaml::from_str(&raw)
+                .with_context(|| format!("parse yaml {}", path.display()))?,
+        };
 
     let kubo_rpc_api = file
         .kubo_rpc_api
@@ -214,7 +221,9 @@ pub fn load_world_config(slug: &str) -> Result<(WorldConfig, PathBuf)> {
     Ok((config, path))
 }
 
-pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<StartupIdentityMaterial>> {
+pub fn load_startup_identity_material(
+    config: &WorldConfig,
+) -> Result<Option<StartupIdentityMaterial>> {
     if !config.publish_identity_on_startup {
         return Ok(None);
     }
@@ -225,11 +234,17 @@ pub fn load_startup_identity_material(config: &WorldConfig) -> Result<Option<Sta
         config.identity_encryption_private_key_hex_file.as_deref(),
     ) {
         let ipns_private_key_base64 = fs::read_to_string(expand_tilde(Path::new(ipns_key_file)))
-            .with_context(|| format!("read identity_ipns_private_key_base64_file {ipns_key_file}"))?;
+            .with_context(|| {
+                format!("read identity_ipns_private_key_base64_file {ipns_key_file}")
+            })?;
         let signing_private_key_hex = fs::read_to_string(expand_tilde(Path::new(signing_key_file)))
-            .with_context(|| format!("read identity_signing_private_key_hex_file {signing_key_file}"))?;
-        let encryption_private_key_hex = fs::read_to_string(expand_tilde(Path::new(encryption_key_file)))
-            .with_context(|| format!("read identity_encryption_private_key_hex_file {encryption_key_file}"))?;
+            .with_context(|| {
+                format!("read identity_signing_private_key_hex_file {signing_key_file}")
+            })?;
+        let encryption_private_key_hex =
+            fs::read_to_string(expand_tilde(Path::new(encryption_key_file))).with_context(
+                || format!("read identity_encryption_private_key_hex_file {encryption_key_file}"),
+            )?;
 
         return Ok(Some(StartupIdentityMaterial {
             ipns_private_key_base64: ipns_private_key_base64.trim().to_string(),

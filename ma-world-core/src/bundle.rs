@@ -32,16 +32,22 @@ pub struct EncryptedIdentityBundle {
 }
 
 pub fn parse_plain_identity_bundle_json(raw: &str) -> Result<PlainIdentityBundle> {
-    let bundle: PlainIdentityBundle =
-        serde_json::from_str(raw).map_err(|err| anyhow!("invalid plaintext identity bundle JSON: {err}"))?;
+    let bundle: PlainIdentityBundle = serde_json::from_str(raw)
+        .map_err(|err| anyhow!("invalid plaintext identity bundle JSON: {err}"))?;
     if bundle.ipns_private_key_base64.trim().is_empty() {
-        return Err(anyhow!("ipns_private_key_base64 is empty in plaintext identity bundle"));
+        return Err(anyhow!(
+            "ipns_private_key_base64 is empty in plaintext identity bundle"
+        ));
     }
     if bundle.signing_private_key_hex.trim().is_empty() {
-        return Err(anyhow!("signing_private_key_hex is empty in plaintext identity bundle"));
+        return Err(anyhow!(
+            "signing_private_key_hex is empty in plaintext identity bundle"
+        ));
     }
     if bundle.encryption_private_key_hex.trim().is_empty() {
-        return Err(anyhow!("encryption_private_key_hex is empty in plaintext identity bundle"));
+        return Err(anyhow!(
+            "encryption_private_key_hex is empty in plaintext identity bundle"
+        ));
     }
     Ok(bundle)
 }
@@ -66,7 +72,13 @@ pub fn encrypt_identity_bundle(
     let key = derive_key(passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new((&key).into());
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: &plaintext, aad: BUNDLE_AAD })
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &plaintext,
+                aad: BUNDLE_AAD,
+            },
+        )
         .map_err(|err| anyhow!("encrypt identity bundle: {err}"))?;
 
     Ok(EncryptedIdentityBundle {
@@ -79,9 +91,13 @@ pub fn encrypt_identity_bundle(
     })
 }
 
-pub fn encrypt_identity_bundle_json(passphrase: &str, plain: &PlainIdentityBundle) -> Result<String> {
+pub fn encrypt_identity_bundle_json(
+    passphrase: &str,
+    plain: &PlainIdentityBundle,
+) -> Result<String> {
     let encrypted = encrypt_identity_bundle(passphrase, plain)?;
-    serde_json::to_string(&encrypted).map_err(|err| anyhow!("serialize encrypted identity bundle: {err}"))
+    serde_json::to_string(&encrypted)
+        .map_err(|err| anyhow!("serialize encrypted identity bundle: {err}"))
 }
 
 pub fn decrypt_identity_bundle(
@@ -106,14 +122,20 @@ pub fn decrypt_identity_bundle(
         .decode(encrypted.salt_b64.trim())
         .map_err(|err| anyhow!("invalid salt_b64: {err}"))?;
     if salt.len() != SALT_LEN {
-        return Err(anyhow!("invalid salt length: expected {SALT_LEN}, got {}", salt.len()));
+        return Err(anyhow!(
+            "invalid salt length: expected {SALT_LEN}, got {}",
+            salt.len()
+        ));
     }
 
     let nonce = B64
         .decode(encrypted.nonce_b64.trim())
         .map_err(|err| anyhow!("invalid nonce_b64: {err}"))?;
     if nonce.len() != NONCE_LEN {
-        return Err(anyhow!("invalid nonce length: expected {NONCE_LEN}, got {}", nonce.len()));
+        return Err(anyhow!(
+            "invalid nonce length: expected {NONCE_LEN}, got {}",
+            nonce.len()
+        ));
     }
 
     let ciphertext = B64
@@ -123,34 +145,46 @@ pub fn decrypt_identity_bundle(
     let key = derive_key(passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new((&key).into());
     let plaintext = cipher
-        .decrypt(XNonce::from_slice(&nonce), Payload { msg: &ciphertext, aad: BUNDLE_AAD })
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &ciphertext,
+                aad: BUNDLE_AAD,
+            },
+        )
         .map_err(|err| anyhow!("decrypt identity bundle: {err}"))?;
 
     let plain: PlainIdentityBundle = serde_json::from_slice(&plaintext)
         .map_err(|err| anyhow!("invalid decrypted identity bundle JSON: {err}"))?;
 
     if plain.ipns_private_key_base64.trim().is_empty() {
-        return Err(anyhow!("ipns_private_key_base64 is empty in decrypted identity bundle"));
+        return Err(anyhow!(
+            "ipns_private_key_base64 is empty in decrypted identity bundle"
+        ));
     }
     if plain.signing_private_key_hex.trim().is_empty() {
-        return Err(anyhow!("signing_private_key_hex is empty in decrypted identity bundle"));
+        return Err(anyhow!(
+            "signing_private_key_hex is empty in decrypted identity bundle"
+        ));
     }
     if plain.encryption_private_key_hex.trim().is_empty() {
-        return Err(anyhow!("encryption_private_key_hex is empty in decrypted identity bundle"));
+        return Err(anyhow!(
+            "encryption_private_key_hex is empty in decrypted identity bundle"
+        ));
     }
 
     Ok(plain)
 }
 
 pub fn decrypt_identity_bundle_json(passphrase: &str, raw: &str) -> Result<PlainIdentityBundle> {
-    let encrypted: EncryptedIdentityBundle =
-        serde_json::from_str(raw).map_err(|err| anyhow!("invalid encrypted identity bundle JSON: {err}"))?;
+    let encrypted: EncryptedIdentityBundle = serde_json::from_str(raw)
+        .map_err(|err| anyhow!("invalid encrypted identity bundle JSON: {err}"))?;
     decrypt_identity_bundle(passphrase, &encrypted)
 }
 
 fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
-    let params = Params::new(65_536, 3, 1, Some(KEY_LEN))
-        .map_err(|err| anyhow!("argon2 params: {err}"))?;
+    let params =
+        Params::new(65_536, 3, 1, Some(KEY_LEN)).map_err(|err| anyhow!("argon2 params: {err}"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut key = [0u8; KEY_LEN];
