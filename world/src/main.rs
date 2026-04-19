@@ -21,7 +21,7 @@ use status::{
     configure_startup_publish, mark_inbox, mark_ipfs, mark_startup_publish_skipped,
     new_shared_status, set_endpoint_metadata,
 };
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -257,12 +257,11 @@ async fn main() -> Result<()> {
                 }
 
                 if heartbeat_at.elapsed() >= Duration::from_secs(5) {
-                    info!(
-                        target: "ma_event",
-                        "router heartbeat: endpoint={} inbox_total={} ipfs_total={}",
-                        endpoint.id(),
-                        inbox_total,
-                        ipfs_total,
+                    debug!(
+                        endpoint_id = %endpoint.id(),
+                        inbox_total = inbox_total,
+                        ipfs_total = ipfs_total,
+                        "router heartbeat"
                     );
                     heartbeat_at = Instant::now();
                 }
